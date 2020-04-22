@@ -26,7 +26,7 @@ bl_info = {
     "location": "",
     "warning": "",
     "blender": (2, 80, 0),
-    "version": (0, 0, 4)
+    "version": (0, 0, 5)
 }
 
 import bpy
@@ -105,7 +105,7 @@ def maya_vert_select(context):
     bm = bmesh.from_edit_mesh(me)
 
     if len(bm.select_history) == 0:
-        return {'FINISHED'} #Or should this be returning CANCELLED?
+        return {'CANCELLED'} #Used to return FINISHED but I think CANCELLED is the proper return?
 
     selected_components = [e for e in bm.edges if e.select] + [f for f in bm.faces if f.select] + [v for v in bm.verts if v.select]
 
@@ -124,9 +124,22 @@ def maya_vert_select(context):
             previous_active_vert.select = True
             bm.select_flush_mode() #Without flushing the next operator won't recognize that there's anything to convert from vert to edge?
             bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='EDGE')
-            bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=False)
-            bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='VERT')
-            bm.select_history.add(active_vert) #Re-add active_vert to history to keep it active.
+            
+            active_edge = [e for e in bm.edges if e.select][0]
+            
+            if active_edge.is_boundary:
+                print("Selecting Boundary Edges Then Verts")
+                boundary_edges = get_boundary_edge_loop(active_edge)
+                for e in boundary_edges:
+                    e.select = True
+                #Might need to flush again before converting back?
+                bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='VERT')
+                bm.select_history.add(active_vert) #Re-add active_vert to history to keep it active.
+            else:
+                print("Selecting Edge Loop Then Verts")
+                bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=False)
+                bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='VERT')
+                bm.select_history.add(active_vert) #Re-add active_vert to history to keep it active.
         #Section to handle partial vertex loops (select verts between 2 endpoint verts)
         #else:
             #I suppose I could take the 2 verts (previous_active_vert and active_vert) and convert+expend them INDIVIDUALLY into Edges (similar to the relevant_neighbours, each of these conversions should be their own list), then turn those edges into loop_multi loops as sets?
@@ -150,7 +163,7 @@ def maya_face_select(context, prefs):
     bm = bmesh.from_edit_mesh(me)
 
     if len(bm.select_history) == 0:
-        return {'FINISHED'} #Or should this be returning CANCELLED?
+        return {'CANCELLED'} #Used to return FINISHED but I think CANCELLED is the proper return?
 
     selected_components = [e for e in bm.edges if e.select] + [f for f in bm.faces if f.select] + [v for v in bm.verts if v.select]
 
@@ -202,8 +215,10 @@ def maya_face_select(context, prefs):
             #If the lengths are all the same, though, best we can do is throw our hands up in the air and select everything I guess?  Maya actually does something like this on  my test shape, although it selects only 2 bounded face loops instead of all 3 of them (a complete ring).
     else:
         if prefs.select_linked_on_double_click:
-            bpy.ops.mesh.select_linked(delimit={'NORMAL'})
-            return {'FINISHED'}
+            bpy.ops.mesh.select_linked(delimit={'NORMAL'}) 
+            #If a mesh has any faces with flipped/reversed normals then this won't select the full mesh chunk.  
+            #There doesn't seem to be a way to delimit by geometry that isn't connected.  Delimit by UV shells won't work.  
+            #The mesh separate by loose parts operator somehow has logic for this.. maybe something can be gleaned from the C code.
 
     for component in selected_components:
         component.select = True
@@ -218,7 +233,7 @@ def maya_edge_select(context):
     bm = bmesh.from_edit_mesh(me)
 
     if len(bm.select_history) == 0:
-        return {'FINISHED'} #Or should this be returning CANCELLED?
+        return {'CANCELLED'} #Used to return FINISHED but I think CANCELLED is the proper return?
 
     #Everything that is currently selected.
     selected_components = {e for e in bm.edges if e.select} | {f for f in bm.faces if f.select} | {v for v in bm.verts if v.select}
@@ -237,7 +252,7 @@ def maya_edge_select(context):
     #Deselect everything except the active edge.
     select_edge(active_edge)
 
-    #If the previous edge and current edge are different we are doing a Shift+Double Click selection? This could be a complete edge loop, ring, or partial ring/loop.
+    #If the previous edge and current edge are different we are doing a Shift+Double Click selection? This could be a complete edge ring/loop, or partial ring/loop.
     if not previous_active_edge.index == active_edge.index:
         #If the previous edge is in the ring test selection we want some sort of ring selection.
         if previous_active_edge.index in ring_edges:
@@ -292,17 +307,17 @@ def maya_edge_select(context):
                     for e in new_sel:
                         e.select = True
 
-            elif active_edge.is_boundary:# or previous_active_edge.is_boundary:
-                print("Getting Boundary Edges")
+            elif active_edge.is_boundary:
+                print("Selecting Boundary Edges")
                 boundary_edges = get_boundary_edge_loop(active_edge)
                 for e in boundary_edges:
                     e.select = True
 
             bm.select_history.clear()
-    #I guess clicking an edge twice makes the previous and active the same?  Therefore we must be selecting a loop or partial loop instead of a ring.
+    #I guess clicking an edge twice makes the previous and active the same?  Therefore we must be selecting a new loop that's not related to any previous selected edge.
     else:
-        if active_edge.is_boundary:# or previous_active_edge.is_boundary:
-            print("Getting Boundary Edges")
+        if active_edge.is_boundary:
+            print("Selecting Boundary Edges")
             boundary_edges = get_boundary_edge_loop(active_edge)
             for e in boundary_edges:
                 e.select = True
@@ -353,15 +368,14 @@ def select_face(active_face):
     bpy.ops.mesh.select_all(action='DESELECT')
     active_face.select = True
 
-def get_boundary_edge_loop(edge, max_edges=1000):
-    i=0
-    if edge.is_boundary:
-        first_edge = edge
-        cur_edge = edge
+
+def get_boundary_edge_loop(active_edge):
+    first_edge = active_edge
+    cur_edge = active_edge
     final_selection = []
 #    print("==========BEGIN!==========")
 #    print("Starting Edge= " + str(cur_edge.index))
-    while i < max_edges:
+    while True:
         final_selection.append(cur_edge)
         edge_verts = cur_edge.verts
         new_edges = []
@@ -371,12 +385,10 @@ def get_boundary_edge_loop(edge, max_edges=1000):
         
         if len(new_edges) == 0 or new_edges[0] == first_edge:
 #            print("i is: " + str(i))
-#            return final_selection
             break
         else:
 #            print("Next Edge= " + str(new_edges[0].index))
             cur_edge = new_edges[0]
-            i+=1
     return final_selection
 
 ######################Loopanar defs######################
@@ -401,7 +413,7 @@ def ring_extension(edge, face):
         target_verts = [v for v in face.verts if v not in edge.verts] #Get the only 2 verts that are not in the edge we start with.
         return [e for e in face.edges if #Give us the edge if..
             target_verts[0] in e.verts and #The first vertex from target_verts is part of the edge (e, since we're iterating all 4 edges)..
-            target_verts[1] in e.verts][0] #The second vertex from target_verts is part of the same edge.. but what I don't understand is what the "[0]" after the closing bracket ] does.. it seems like the first item in a list (like edge[0]) but there can only be one edge anyway..
+            target_verts[1] in e.verts][0] #The second vertex from target_verts is part of the same edge.. and specifically return the first edge [0]
             #Return that edge back to partial_ring
             #Side note: I guess Maya has an extra check around in here that if the face already has 2 edges selected (or 'marked' for selection) then it's time to terminate the extension.  You'll end up with 3 edges selected (from the previous extension) if a ring loops back across the same face.
     else:
