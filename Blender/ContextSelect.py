@@ -26,7 +26,7 @@ bl_info = {
     "location": "",
     "warning": "",
     "blender": (2, 80, 0),
-    "version": (0, 0, 7)
+    "version": (0, 0, 8)
 }
 
 # ToDo: 
@@ -201,8 +201,15 @@ def maya_face_select(context, prefs):
     corner_vert = ring_edge.verts[0] # Note: In theory it shouldn't matter which vertex we choose as the basis for the other_edge because loop_multi_select appears to be robust. For example, it will work on a boundary edge or from a triangle's edge just fine.
     other_edge = [e for e in a_edges if e != ring_edge and (e.verts[0].index == corner_vert.index or e.verts[1].index == corner_vert.index)][0]
 
-    loop1_faces = faceloop_from_edge(bm, ring_edge)
-    loop2_faces = faceloop_from_edge(bm, other_edge)
+    select_edge(ring_edge)
+    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
+    edge_ring = [e for e in bm.edges if e.select]
+    loop1_faces = face_loop_from_edge_ring(edge_ring)
+
+    select_edge(other_edge)
+    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
+    edge_ring = [e for e in bm.edges if e.select]    
+    loop2_faces = face_loop_from_edge_ring(edge_ring)
 
     select_face(active_face)
 
@@ -406,11 +413,37 @@ def get_boundary_edge_loop(active_edge):
             cur_edge = new_edges[0]
     return final_selection
 
-def faceloop_from_edge(bm, edge):
+# This takes two faces and gives a bounded ring of edges between them if they are in the same quad loop of faces.
+# Or more precisely, it will once I finish writing it.  Right now it doesn't do anything.
+def edge_ring_from_faces(bm, active_face, previous_active_face):
+    edge_ring = []
+    a_edges = active_face.edges
+    p_edges = previous_active_face.edges
+
+    a_corner_vert = active_face.verts[0]
+    p_corner_vert = previous_active_face.verts[0]
+    
+    a_edge1 = a_corner_vert.link_edges[0]
+    a_edge2 = a_corner_vert.link_edges[1]
+    
+    p_edge1 = p_corner_vert.link_edges[0]
+    p_edge2 = p_corner_vert.link_edges[1]
+    
+    a_ring1 = select_bounded_ring(a_edge1)
+    a_ring2 = select_bounded_ring(a_edge2)
+    
+    p_ring1 = select_bounded_ring(p_edge1)
+    p_ring2 = select_bounded_ring(p_edge2)
+    
+#    correct_ring = [e for e in _something_ if e in _something_else_ and in a_edges and in p_edges] # What we want are the 4 edges from the two faces that are in two (or, god help us, more) of the test edge rings.  That determines the 4 edges that will be passed to Loopanar.
+    # Probably need to use sets for comparison.
+    
+    return edge_ring
+
+# This takes a ring of edges that you have already determined to be valid.
+# Could probably use some sanity checks to ensure the ring isn't an empty list, or whether faces are all quads and such.
+def face_loop_from_edge_ring(edge_ring):
     face_loop = []
-    select_edge(edge)
-    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
-    edge_ring = [e for e in bm.edges if e.select]
     faces = []
 
     for e in edge_ring:
