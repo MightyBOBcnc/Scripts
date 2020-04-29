@@ -26,7 +26,7 @@ bl_info = {
     "location": "",
     "warning": "",
     "blender": (2, 80, 0),
-    "version": (0, 0, 5)
+    "version": (0, 0, 6)
 }
 
 import bpy
@@ -170,40 +170,93 @@ def maya_face_select(context, prefs):
     active_face = bm.select_history.active
     previous_active_face = bm.select_history[len(bm.select_history) - 2]
 
+    if not len(active_face.verts) == 4 or not len(previous_active_face.verts) == 4:
+        return {'CANCELLED'}
+
     select_face(active_face)
 
     neighbour_faces = get_neighbour_faces(bm)
-
     relevant_neighbour_faces = [f for f in neighbour_faces if not f == active_face.index]
-
-    select_face(active_face)
-
-    bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=False)
-    loop_faces = [f.index for f in bm.faces if f.select]
-
-    select_face(active_face)        
     
+    a_edges = active_face.edges
+    p_edges = previous_active_face.edges
+    ring_edge = [e for e in a_edges if e in p_edges][0] # Need to test what happens if two quads share two edges (3-point pole).  (Also see how Maya behaves.)
+    print("ring_edge: " + str(ring_edge))
+    corner_vert = ring_edge.verts[0] # Note: In theory it shouldn't matter which vertex we choose as the basis for the other_edge because loop_multi_select appears to be robust. For example, it will work on a boundary edge or from a triangle's edge just fine.
+    print("corner_vert: " + str(corner_vert))
+    other_edge = [e for e in a_edges if e != ring_edge and e.verts[0].index == corner_vert.index or e.verts[1].index == corner_vert.index][0]
+    print("other_edge: " + str(other_edge))
+
+#    select_face(active_face)
+    select_edge(ring_edge)
+
+    # This is the annoying part of the face loop selection that has the directionality test in it. Can replace with a bmesh check to see if the active_face and previous_active_face have a shared edge instead.
+    # If yes, then we can do a loop_multi_select in Ring mode on that shared edge to bypass the dirctionality test that is in edgering_select! Huzzah!
+    # Finally, lazily convert to vert and then to face selection.
+    # Or a more advanced solution would be a bmesh check to only select faces if the face has TWO edges in the current ring, thus it couldn't expand the loop at the terminating ends of the ring if it isn't an infinite ring.  This is actually similar to Loopanar's boundary edge selection test?
+#    bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=False)
+#    loop_faces = [f.index for f in bm.faces if f.select]
+#    loop_facez = [f for f in bm.faces if f.select]
+
+    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
+    bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='VERT')
+    bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='FACE')
+    loop1_faces = [f for f in bm.faces if f.select]
+
+#    select_face(active_face)        
+
+    select_edge(other_edge)
+
     #ring=True because in some cases trying to grab loops when there are triangles touching the active_face will not result in proper selection.
     bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
     #First select mode conversion has to be to Edge instead of Verts because Blender is stupid and if you have vertices selected that encompass a triangle that touches the active_face it will select that triangle because it is 'bounded' which is dead wrong.
-    bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='EDGE')
+    """Oh shit, this conversion actually doesn't work at all if the first conversion is Edges because 1) it's ALREADY EDGES and 2) converting from Edge to Face results in.. NO SELECTION except for the active_object... That means two_loop_faces has been broken this entire time since my change."""
+    """We probably can't do a selection expand because that will screw up the ends of the loops if they aren't infinite loops?  This will require testing.  But the end result seems to be that we will have to deal with a wrong selection."""
+    """Either we'll have extra selected faces around the active_face due to using vertex instead of edge (if triangles are present) or we will have extra expanded faces at the ends of non-infinite face loops."""
+    """Both would be bad if the user selects them when intending to do a linked selection with a shift+double click, although that could reasonably be said to not be a proper way to use the tool; you should just do a regular double click if you're selecting linked on the same loose mesh."""
+    
+    """I suppose if I go with the Vertex conversion, I could add an extra test to see if previous_active_face has 4 edges (quad) to validate if we continue... the issue is a diagonal selection right next to the quad active_face."""
+    """Or I could do a second neighbour_faces with use_face_step=true?  Then subtract out the faces that are in the second neighbour_faces that aren't in the relevant_neighbour_faces from the two_loop_faces set to end up with only the correct two_loop_faces?"""
+    
+    """Or I could learn how to bmesh a face loop... but I don't know how to do the bmesh loop traversal that can ignore flipped face normals..."""
+    
+    """Or I could maybe bmesh check the previous_active_face with the active_face to determine if they are connected by 1 vertex?  That would mean they are diagonal to each other and we aren't actually doing a partial/bounded loop and can skip off of line 215 to the end."""
+    """Basically it has to check to see if the other face is touching in any way IF I go with the VERT conversion instead of the use_expand=True conversion from an edge selection.  Basically, yeah, gotta test which is worse.. verts or expanding.. go with the least bad option and fix from there."""
+    
+    # Actually the easier solution might be to just get two separate face loops.  Pick 1 vert from the edge that connects the active and previous face, get the 2 edges connected to it, do a multi_select for each of those edges, and then just check and see if the active is in either of the loops.
+    # loop_faces1 and loop_faces2.  or we could just declare two_loop_faces = [] as empty, and then extend it with loop 1 and loop 2 to make a single list and use that single list the same way as now.  By getting the 2 loops separately I don't think we have to worry about the vertex selections!
+    bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='VERT')
     bpy.ops.mesh.select_mode('INVOKE_DEFAULT', use_extend=False, use_expand=False, type='FACE')
-    two_loop_faces = [f.index for f in bm.faces if f.select]
+#    two_loop_faces = [f.index for f in bm.faces if f.select]
+    loop2_faces = [f for f in bm.faces if f.select]
 
     select_face(active_face)
-
-    if previous_active_face.index in loop_faces and not previous_active_face.index == active_face.index:
-        if previous_active_face.index in relevant_neighbour_faces:
-            bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=True) #I have no idea if changing this from False to True has any implications.  I haven't seen any as of yet.
-        elif active_face.index in two_loop_faces:
+    """New code"""
+#    if previous_active_face.index in two_loop_faces and not previous_active_face.index == active_face.index: # A diagonal triangle would pass this test.
+    if previous_active_face in loop1_faces or previous_active_face in loop2_faces and not previous_active_face.index == active_face.index:
+        if previous_active_face.index in relevant_neighbour_faces: # The triangle would fail this test.
+            """Bmesh code to select loop as mentioned above on line 181 and 182.  We can actually ditch that code from above and do it right here instead because we aren't going to need it anywhere else; this is the only place we'll select a loop."""
+            for f in loop1_faces:
+                f.select = True
+        else: # Ergo we would end up right here with the triangle.. 
             previous_active_face.select = True
             """(This is not a reliable method because shortest_path_select can leave the loop to take shortcuts.)"""
             bpy.ops.mesh.shortest_path_select(use_face_step=True)
-    elif previous_active_face.index in two_loop_faces and not previous_active_face.index == active_face.index: 
-        if active_face.index in two_loop_faces:
-            previous_active_face.select = True
+        
+    
+#    if previous_active_face.index in loop_faces and not previous_active_face.index == active_face.index:
+#        if previous_active_face.index in relevant_neighbour_faces:
+            """I think this could literally be replaced with a snippet that just selects loop_faces because that list was already generated and those are the faces we ane if this tests true."""
+#            bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=True) #I have no idea if changing this from False to True has any implications.  I haven't seen any as of yet.
+#        elif active_face.index in two_loop_faces:
+#            previous_active_face.select = True
             """(This is not a reliable method because shortest_path_select can leave the loop to take shortcuts.)"""
-            bpy.ops.mesh.shortest_path_select(use_face_step=True)
+#            bpy.ops.mesh.shortest_path_select(use_face_step=True)
+#    elif previous_active_face.index in two_loop_faces and not previous_active_face.index == active_face.index:
+#        if active_face.index in two_loop_faces:
+#            previous_active_face.select = True
+            """(This is not a reliable method because shortest_path_select can leave the loop to take shortcuts.)"""
+#            bpy.ops.mesh.shortest_path_select(use_face_step=True)
             #If we convert to edges first we might be able to use the Loopanar ring completion to get the edges between and then convert to verticies and finally back to contained faces.
             #Nope, the ring selection gets extended from all edges of both faces except for the direction parallel to the correct ring (that part works right).
             #Perhaps instead do a full loop from all 4 edges of the first (or second, doesn't matter) face individually and then if any of those loop edges are in both of the faces then we know that is the proper direction.
@@ -335,12 +388,13 @@ def maya_edge_select(context):
     bmesh.update_edit_mesh(me)
     return {'FINISHED'}
 
+# This could be replaced with a bmesh check for connected edges to a single vert and then get the 4 other_vert.  The question is, would that be faster at all?  Grabbing an actual selection could be a performance issue on high poly meshes perhaps.
 def get_neighbour_verts(bm):
     bpy.ops.mesh.select_more(use_face_step=False)
     neighbour_verts = [vert.index for vert in bm.verts if vert.select]
     return neighbour_verts
 
-
+# I could completely replace the method for get_neighbour_faces with bmesh since it's just the faces that are connected by a shared edge.  The question is, would that be faster at all?
 def get_neighbour_faces(bm):
     bpy.ops.mesh.select_more(use_face_step=False)
     neighbour_faces = [face.index for face in bm.faces if face.select]
