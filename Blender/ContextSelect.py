@@ -508,7 +508,6 @@ def face_loop_from_edge(edge):
         next_face = next_loop.face
         if len(next_face.verts) == 4 and next_face not in face_list:
             face_list.append(next_face.index)
-            next_face.select = True # get rid of me
 
         # This probably needs a proper sanity check to make sure there even is a face before we try to call the verts of said face.
         # Same for if the loop even has faces to link to.  Maybe move the edge.link_faces test to the front?
