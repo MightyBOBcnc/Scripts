@@ -26,7 +26,7 @@ bl_info = {
     "location": "",
     "warning": "",
     "blender": (2, 80, 0),
-    "version": (0, 0, 8)
+    "version": (0, 0, 9)
 }
 
 # ToDo: 
@@ -119,14 +119,14 @@ def maya_vert_select(context):
     if len(bm.select_history) == 0:
         return {'CANCELLED'} #Used to return FINISHED but I think CANCELLED is the proper return?
 
-    selected_components = [e for e in bm.edges if e.select] + [f for f in bm.faces if f.select] + [v for v in bm.verts if v.select]
+    selected_components = [v for v in bm.verts if v.select]# + [e for e in bm.edges if e.select] + [f for f in bm.faces if f.select]
 
     active_vert = bm.select_history.active
     previous_active_vert = bm.select_history[len(bm.select_history) - 2]
 
     select_vert(active_vert)
 
-    neighbour_verts = get_neighbour_verts(bm)
+    neighbour_verts = get_neighbour_verts(active_vert)
 
     relevant_neighbour_verts = [v for v in neighbour_verts if not v == active_vert.index]
 
@@ -167,6 +167,7 @@ def maya_vert_select(context):
         component.select = True
         bm.select_history.add(active_vert) #Re-add active_vert to history to keep it active.
 
+    bm.select_flush_mode()
     bmesh.update_edit_mesh(me)
     return {'FINISHED'}
 
@@ -177,7 +178,7 @@ def maya_face_select(context, prefs):
     if len(bm.select_history) == 0:
         return {'CANCELLED'} #Used to return FINISHED but I think CANCELLED is the proper return?
 
-    selected_components = [e for e in bm.edges if e.select] + [f for f in bm.faces if f.select] + [v for v in bm.verts if v.select]
+    selected_components = [f for f in bm.faces if f.select]# + [e for e in bm.edges if e.select] + [v for v in bm.verts if v.select] # I wonder if it's necessary to get all 3 component types if we're in a specific mode.  Just the current type + a flush should do it?
 
     active_face = bm.select_history.active
     previous_active_face = bm.select_history[len(bm.select_history) - 2]
@@ -188,7 +189,7 @@ def maya_face_select(context, prefs):
 
     select_face(active_face)
 
-    neighbour_faces = get_neighbour_faces(bm)
+    neighbour_faces = get_neighbour_faces(active_face)
     relevant_neighbour_faces = [f for f in neighbour_faces if not f == active_face.index]
     
     a_edges = active_face.edges
@@ -201,23 +202,31 @@ def maya_face_select(context, prefs):
     corner_vert = ring_edge.verts[0] # Note: In theory it shouldn't matter which vertex we choose as the basis for the other_edge because loop_multi_select appears to be robust. For example, it will work on a boundary edge or from a triangle's edge just fine.
     other_edge = [e for e in a_edges if e != ring_edge and (e.verts[0].index == corner_vert.index or e.verts[1].index == corner_vert.index)][0]
 
-    select_edge(ring_edge)
-    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
-    edge_ring = [e for e in bm.edges if e.select]
-    loop1_faces = face_loop_from_edge_ring(edge_ring)
+#    If getting a full loop of faces is a performance issue on heavy meshes, and doing it twice is worse, maybe limit these to like 500 faces?  Most sane modeling tasks won't involve doing a bounded face loop selection with hundreds of faces between the active and previous face.
+#    This does mean, however, that later in the script we can't just select a list that was already created.. we'd have to do more selections again.. 
+    print("Selecting Face Loop 1")
+#    select_edge(ring_edge)
+#    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
+#    edge_ring = [e for e in bm.edges if e.select]
+   # edge_ring = entire_ring(ring_edge)
+    loop1_faces = face_loop_from_edge(ring_edge)
 
-    select_edge(other_edge)
-    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
-    edge_ring = [e for e in bm.edges if e.select]    
-    loop2_faces = face_loop_from_edge_ring(edge_ring)
+    print("Selecting Face Loop 2")
+#    select_edge(other_edge)
+#    bpy.ops.mesh.loop_multi_select('INVOKE_DEFAULT', ring=True)
+#    edge_ring = [e for e in bm.edges if e.select]
+   # edge_ring = entire_ring(other_edge)
+    loop2_faces = face_loop_from_edge(other_edge)
 
     select_face(active_face)
 
-    if (previous_active_face in loop1_faces or previous_active_face in loop2_faces) and not previous_active_face.index == active_face.index:
+    if (previous_active_face.index in loop1_faces or previous_active_face.index in loop2_faces) and not previous_active_face.index == active_face.index:
         if previous_active_face.index in relevant_neighbour_faces:
+            print("Selecting Final Face Loop")
             for f in loop1_faces: # We already have the loop, so just select it.
-                f.select = True
+                bm.faces[f].select = True
         else:
+            print("Selecting Shortest Face Path")
             previous_active_face.select = True
             """(This is not a reliable method because shortest_path_select can leave the loop to take shortcuts.)"""
             bpy.ops.mesh.shortest_path_select(use_face_step=True)
@@ -232,6 +241,7 @@ def maya_face_select(context, prefs):
         #If the lengths are all the same, though, best we can do is throw our hands up in the air and select everything I guess?  Maya actually does something like this on  my test shape, although it selects only 2 bounded face loops instead of all 3 of them (a complete ring).
     else:
         if prefs.select_linked_on_double_click:
+            print("Selecting Linked Faces")
             bpy.ops.mesh.faces_select_linked_flat(sharpness=180.0) 
             # Does running the extra code to check the angle make this slower than just selecting anything that's connected until we run out of stuff to select?  
             # On the one hand it's running in C so it's faster than python, but on the other hand it's doing extra stuff we don't need.  So would doing the 'simple' method in python be slower than the 'complex' method in C?
@@ -257,7 +267,7 @@ def maya_edge_select(context):
         return {'CANCELLED'} #Used to return FINISHED but I think CANCELLED is the proper return?
 
     #Everything that is currently selected.
-    selected_components = {e for e in bm.edges if e.select} | {f for f in bm.faces if f.select} | {v for v in bm.verts if v.select}
+    selected_components = [e for e in bm.edges if e.select]# | {f for f in bm.faces if f.select} | {v for v in bm.verts if v.select} # Why  is the edge selection function the only one using curly braces {}? And why the bitwise or operator here with the pipe | instead of +?
 
     active_edge = bm.select_history.active
     previous_active_edge = bm.select_history[len(bm.select_history) - 2]
@@ -356,19 +366,26 @@ def maya_edge_select(context):
     bmesh.update_edit_mesh(me)
     return {'FINISHED'}
 
-# This could be replaced with a bmesh check for connected edges to a single vert and then get the 4 other_vert.  The question is, would that be faster at all?  Grabbing an actual selection could be a performance issue on high poly meshes perhaps.
-def get_neighbour_verts(bm):
-    bpy.ops.mesh.select_more(use_face_step=False)
-    neighbour_verts = [vert.index for vert in bm.verts if vert.select]
+def get_neighbour_verts(vertex):
+#    bpy.ops.mesh.select_more(use_face_step=False)
+#    neighbour_verts = [vert.index for vert in bm.verts if vert.select]
+    
+    edges = vertex.link_edges[:]
+    neighbour_verts = [v.index for e in edges for v in e.verts[:]] # Contains duplicate indices for the input vert but that's not a big deal because the list is always short.
+    print(neighbour_verts)
     return neighbour_verts
 
-# I could completely replace the method for get_neighbour_faces with bmesh since it's just the faces that are connected by a shared edge.  The question is, would that be faster at all?
-def get_neighbour_faces(bm):
-    bpy.ops.mesh.select_more(use_face_step=False)
-    neighbour_faces = [face.index for face in bm.faces if face.select]
+def get_neighbour_faces(face):
+#    bpy.ops.mesh.select_more(use_face_step=False)
+#    neighbour_faces = [face.index for face in bm.faces if face.select]
+
+    face_edges = face.edges[:]
+    neighbour_faces = [f.index for e in face_edges for f in e.link_faces[:]] # Contains duplicate indices for the input face but that's not a big deal because the list is always short.
+    print(neighbour_faces)
     return neighbour_faces
 
-# I think this could be done with bmesh in 2 steps? 1. get the faces connected to the edge, 2. get the edges connected to those faces, (and maybe 3. filter out what we don't care about)
+# 1. get the faces connected to the edge, 2. get the edges connected to those faces,
+# 3. get the vertices from the original edge, 4. get the edges connected to those vertices.  Thus we get the edges for any relevant loop or edge.  Return combination of 2 and 4.
 def get_neighbour_edges(bm):
     #We must use face step in order to get the edges on the other side of the connected faces to find out if they're in the ring.
     bpy.ops.mesh.select_more(use_face_step=True)
@@ -406,7 +423,6 @@ def get_boundary_edge_loop(active_edge):
 #        print("New Edges= " + str([e.index for e in new_edges]))
         
         if len(new_edges) == 0 or new_edges[0] == first_edge:
-#            print("i is: " + str(i))
             break
         else:
 #            print("Next Edge= " + str(new_edges[0].index))
@@ -435,12 +451,28 @@ def edge_ring_from_faces(bm, active_face, previous_active_face):
     p_ring1 = select_bounded_ring(p_edge1)
     p_ring2 = select_bounded_ring(p_edge2)
     
-#    correct_ring = [e for e in _something_ if e in _something_else_ and in a_edges and in p_edges] # What we want are the 4 edges from the two faces that are in two (or, god help us, more) of the test edge rings.  That determines the 4 edges that will be passed to Loopanar.
+#    correct_ring = [e for e in _something_ if e in _something_else_ and e in a_edges and e in p_edges] # What we want are the 4 edges from the two faces that are in two (or, god help us, more) of the test edge rings.  That determines the 4 (or more..) edges that will be passed to Loopanar.
     # Probably need to use sets for comparison.
+
+# Actually I thought of a better way to get a face loop for testing bounded selection that doesn't require a separate function to get a ring from 2 faces and then get faces from the ring.
+# We also don't need to test 4 times.  Only 2, at most, and if the first test returns true we can skip doing the second test which means better performance!  (Note: Unless ugly edge cases happen; I'm designing for happy path first and then edge cases can be dealt with.)
+# 1. Use the simple loop ring traversal method starting from a_edge1 (using code that can 'going_forward' and then go backward if reaching a dead end).
+# 2. Every time we jump to the next loop, see if the loop.edge is in p_edges. (Maybe also maintain a list of loops already visited similar to def walk_boundary here: https://github.com/BenjaminSauder/EdgeFlow/blob/master/util.py so that we don't waste time testing places we've checked already.)
+# 3. If we reach the end and get no match, do it again using a_edge2.
+# 4. If we get no match for either test, run faces_select_linked_flat back in the main class because it's not a bounded face.
+# 5. If we do get a match, though, then we know which edge/loop to use for our face selection.  Now we begin the work of determining the shortest number of faces between the active_face and previous_active_face (like whatever Loopanar is doing to determine gaps in group_unselected).
+# 6. There might be a clever way to reduce the work for this step.  Instead of starting over from scratch now that we know which edge/loop corresponds to the proper direction..
+#    We actually started building a list of faces back during the While Loop in step 2.
+#    If we reach the previous_active_face on the first try (while going_forward), either because it's the correct direction or because the loop is infinite, then we already have one of our 'gaps' in a list of faces already (or whatever group_unselected is doing).
+#    If we reach a dead end and have to reverse direction I'm not sure if we need to discard the list and start over in the other direction or if the built list is still useful later for the gap stuff ("these faces are definitely useless") and we should keep it while starting a second list.
+#    If we have to continue to step 3. then the list(s) do have to be discarded and started over.
+# 7. So we keep the list(s) from step 2 or 3 and now we do whatever the gaps stuff in group_unselected is and build another list of faces in the opposite direction and then do the comparison or whatever to determine which is shorter.  
+#    I haven't closely inspected what group_unselected does and how the 'gaps' stuff works.
+# 8. Return the correct faces for selection.
     
     return edge_ring
 
-# This takes a ring of edges that you have already determined to be valid.
+# This takes a ring of edges that you have already determined to be valid and returns the loop of faces that match the ring.
 # Could probably use some sanity checks to ensure the ring isn't an empty list, or whether faces are all quads and such.
 def face_loop_from_edge_ring(edge_ring):
     face_loop = []
@@ -449,7 +481,8 @@ def face_loop_from_edge_ring(edge_ring):
     for e in edge_ring:
         connected_faces = e.link_faces[:]
         for f in connected_faces:
-            faces.append(f)
+            if f not in faces:
+                faces.append(f)
 
     for f in faces:
         connected_edges = f.edges[:]
@@ -461,20 +494,59 @@ def face_loop_from_edge_ring(edge_ring):
             face_loop.append(f)
     return face_loop
 
+# Takes an edge and returns a loop of face indices for the ring of that edge.
+def face_loop_from_edge(edge):
+    loop = edge.link_loops[0]
+    first_loop = loop
+    cur_loop = loop
+    face_list = []
+    going_forward = True
+    while True:
+        # Jump to next loop on the same edge and walk two loops forward (opposite edge)
+        next_loop = cur_loop.link_loop_radial_next.link_loop_next.link_loop_next
+
+        next_face = next_loop.face
+        if len(next_face.verts) == 4 and next_face not in face_list:
+            face_list.append(next_face.index)
+            next_face.select = True # get rid of me
+
+        # This probably needs a proper sanity check to make sure there even is a face before we try to call the verts of said face.
+        # Same for if the loop even has faces to link to.  Maybe move the edge.link_faces test to the front?
+        # I think Loopanar maybe has a manifold check somewhere in the Loop selection (not ring) regarding free-floating edges with no faces.
+
+        # If this is true then we've looped back to the beginning and are done
+        if next_loop == first_loop:
+            break
+        # If we reach a dead end because the next face is a tri or n-gon, or the next edge is the mesh boundary
+        elif len(next_loop.face.verts) != 4 or len(next_loop.edge.link_faces) != 2:
+            # If going_forward then this is the first dead end and we want to go the other way
+            if going_forward:
+                going_forward = False
+                # Return to the starting edge and go the other way
+                next_loop = edge.link_loops[1]
+            # If not going_forward then this is the last dead end and we're done
+            else:
+                break
+        # Run this part always
+        cur_loop = next_loop
+    return face_list
+
+
 ######################Loopanar defs######################
 
 def loop_extension(edge, vert):
     candidates = vert.link_edges[:]
-    if len(vert.link_loops) == 4 and vert.is_manifold:
-        cruft = [edge]
+#    if len(vert.link_loops) == 4 and vert.is_manifold:
+    if len(candidates) == 4 and vert.is_manifold: # AFAIK the length of candidates should be the same as vert.link_loops which means we can just check length of candidates instead of performing an extra operation of getting vert_link_loops.
+        cruft = [edge] # The next edge obviously can't be the current edge.
         for l in edge.link_loops:
-            cruft.extend([l.link_loop_next.edge, l.link_loop_prev.edge])
-        return [e for e in candidates if e not in cruft][0]
+            cruft.extend([l.link_loop_next.edge, l.link_loop_prev.edge]) # The 'next' and 'prev' edges are perpendicular to the desired loop so we don't want them.
+        return [e for e in candidates if e not in cruft][0] # Therefore by process of elimination there are 3 unwanted edges in cruft and only 1 possible edge left.
     else:
         return
 
 def loop_end(edge):
-    v1, v2 = edge.verts[:]
+    v1, v2 = edge.verts[:] # What's going on here?  This looks like it's assigning both vertices at once from the edge.verts
     return not loop_extension(edge, v1) \
         or not loop_extension(edge, v2)
 
@@ -487,7 +559,7 @@ def ring_extension(edge, face):
             #Return that edge back to partial_ring
             #Side note: I guess Maya has an extra check around in here that if the face already has 2 edges selected (or 'marked' for selection) then it's time to terminate the extension.  You'll end up with 3 edges selected (from the previous extension) if a ring loops back across the same face.
     else:
-        return
+        return # Return nothing to partial_ring
 
 def ring_end(edge):
     faces = edge.link_faces[:]
@@ -502,11 +574,11 @@ def entire_loop(edge):
     loop = [edge]
     going_forward = True
     while True:
-        ext = loop_extension(e, v)
-        if ext:
+        ext = loop_extension(e, v) # Pass the edge and its starting vert to loop_extension
+        if ext: # If loop_extension returns an edge, keep going.
             if going_forward:
-                if ext == edge: # infinite
-                    return [edge] + loop + [edge]
+                if ext == edge: # infinite; we've reached our starting edge and are done
+                    return [edge] + loop + [edge] # Why the heck are we returning the loop and edge twice?  Loop already has edge in it.  Why not just the loop?
                 else: # continue forward
                     loop.append(ext)
             else: # continue backward
@@ -519,19 +591,19 @@ def entire_loop(edge):
                 e = edge
                 v = edge.verts[1]
             else: # the other end
-                return loop
+                return loop # Return the completed partial loop
 
 def partial_ring(edge, face):
     part_ring = []
     e, f = edge, face
     while True:
-        ext = ring_extension(e, f)
+        ext = ring_extension(e, f) # Pass the edge and face to ring_extension
         if not ext:
             break
         part_ring.append(ext)
-        if ext == edge:
+        if ext == edge: # infinite; we've reached our starting edge and are done
             break
-        if ring_end(ext):
+        if ring_end(ext): # Pass the edge returned from ring_extension to check if it is the end.
             break
         else:
             f = [x for x in ext.link_faces if x != f][0]
@@ -541,7 +613,7 @@ def partial_ring(edge, face):
 def entire_ring(edge):
     fs = edge.link_faces #Get faces connected to this edge.
     ring = [edge]
-    if len(fs) and len(fs) < 3: #Only 2 faces are allowed to be connected to 1 edge in manifold geometry.
+    if len(fs) and len(fs) < 3: # First check to see if there is ANY face connected to the edge (because Blender allows for floating edges, e.g. the Ring primitive type). If there's at least 1 face, then only 2 faces are allowed to be connected to 1 edge in manifold geometry to continue.
         dirs = [ne for ne in [partial_ring(edge, f) for f in fs] if ne] #ne must stand for Next Edge? Take the edge from the input, and a face from fs and pass it to partial_ring..
         if dirs:
             if len(dirs) == 2 and set(dirs[0]) != set(dirs[1]):
