@@ -26,12 +26,13 @@ bl_info = {
     "location": "",
     "warning": "Somewhat experimental features. Possible performance issues.",
     "blender": (2, 80, 0),
-    "version": (0, 1, 0)
+    "version": (0, 1, 1)
 }
 
 # ToDo: 
 # Find out if there need to be any tests for hidden or instanced geometry when we're doing selections.
 #    A quick test with the face loop and boundary loop selection near hidden faces didn't seem to show any issues.
+# Add some more robust checks to validate against nonmanifold geometry like more than 2 faces connected to 1 edge and such.
 # Replace remaining shortest_path_select use (bounded faces).
 # Do some speed tests on some of these functions to measure performance.  There's always a push/pull between the speed of C when using native Blender operators, the extra overhead of doing real selections and mode switches, and using python bmesh without doing real selections or mode switches.
 # Implement deselection for all methods of selection (except maybe select_linked).
@@ -45,6 +46,10 @@ bl_info = {
 #    I checked the original version of the script and this has apparently always been the case and I just didn't notice.  So that's something to investigate now; how to retain selection across multiple objects in edit mode.
 #    If I had to guess this is probably because of all the instances where the script runs select_face, select_edge, and select_vert where it deselects everything, and probably also the times where we switch selection modes (vert, edge, face), and also because we're not getting a selection to restore per object.
 #    So if we could get everything done with bmesh without doing real selections I *think* we could just add to existing selection which wouldn't clear selections and hopefully then we wouldn't even need to get a list of selected components to restore at all, much less per object.
+# Bounded edge loop selection on a floating edge ring like the Circle primitive type.
+# Bounded edge loop selection on a mesh's boundary edges.
+#    Note: Interestingly Maya doesn't do bounded vertex loop selection on a boundary loop.  It does a select_linked instead.
+# Select linked for vertices?  Maya has this if you double click a vertex or shift+double click a vert that is outside of a vertex loop (same as select_linked for faces, basically).  However, do. I. care?  Do people actually do select_linked with vertices?
 
 import bpy
 import bmesh
@@ -120,7 +125,6 @@ def maya_vert_select(context):
 
     active_vert = bm.select_history.active
     previous_active_vert = bm.select_history[len(bm.select_history) - 2]
-
     relevant_neighbour_verts = get_neighbour_verts(active_vert)
 
     select_vert(active_vert)
@@ -171,14 +175,11 @@ def maya_face_select(context, prefs):
 
     active_face = bm.select_history.active
     previous_active_face = bm.select_history[len(bm.select_history) - 2]
-
+    relevant_neighbour_faces = get_neighbour_faces(active_face)
+    
     quads = True
     if not len(active_face.verts) == 4 or not len(previous_active_face.verts) == 4:
         quads = False
-
-    select_face(active_face) # Need to get rid of as many of these as possible.  DE-selection should ideally never need to be done at all.
-
-    relevant_neighbour_faces = get_neighbour_faces(active_face)
     
     a_edges = active_face.edges
     p_edges = previous_active_face.edges
@@ -193,7 +194,7 @@ def maya_face_select(context, prefs):
 #    If getting a full loop of faces is a performance issue on heavy meshes, and doing it twice is worse, maybe limit these to like 500 faces?  Most sane modeling tasks won't involve doing a bounded face loop selection with hundreds of faces between the active and previous face.
 #    This does mean, however, that later in the script we can't just select a list that was already created.. we'd have to do more selections again.. 
 
-    select_face(active_face) # This one might be unavoidable due to using shortest_path_select, but we might be able to move it inside of the elif section for that section only and don't need it for a normal loop.
+    select_face(active_face) # This one might be unavoidable due to using shortest_path_select, but we might be able to move it inside of the elif section for that section only and don't need it for a normal loop. Actually it's probably needed for select_linked also..
 
     """New Code."""
     if not previous_active_face.index == active_face.index:
@@ -276,12 +277,13 @@ def maya_edge_select(context):
 
     active_edge = bm.select_history.active
     previous_active_edge = bm.select_history[len(bm.select_history) - 2]
+    relevant_neighbour_edges = get_neighbour_edges(active_edge)
     opr_selection = [active_edge, previous_active_edge]
-
+    
     #Deselect everything except the active edge.
     select_edge(active_edge)
     #Select an edge ring to get a list of edges.
-    bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=True) # Would be interesting to test the performance difference between edgering_select and Loopanar here.
+    bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=True) # Would be interesting to test the performance difference between edgering_select and Loopanar here.  Especially because we would be working with indices and not doing a real selection, and we could delete the next line too.
     ring_edges = {e.index for e in bm.edges if e.select}
     #Deselect everything except the active edge.
     select_edge(active_edge)
@@ -290,12 +292,6 @@ def maya_edge_select(context):
     if not previous_active_edge.index == active_edge.index:
         #If the previous edge is in the ring test selection we want some sort of ring selection.
         if previous_active_edge.index in ring_edges:
-            neighbour_edges = get_neighbour_edges(active_edge)
-
-            #Edges that are both in the neighbor edges and the test ring selection and aren't the active edge.
-            relevant_neighbour_edges = {e for e in neighbour_edges if e in ring_edges and not e == active_edge.index}
-#            relevant_neighbour_edges = {e for e in neighbour_edges if not e == active_edge.index}
-
             #If the previous edge is in the relevant neighbor edges that means it's right next to it which means we want a full ring selection.
             if previous_active_edge.index in relevant_neighbour_edges:
                 print("Selecting Edge Ring")
@@ -317,15 +313,11 @@ def maya_edge_select(context):
             bpy.ops.mesh.edgering_select('INVOKE_DEFAULT', ring=False)
             loop_edges = {e.index for e in bm.edges if e.select}
 
-            # If active_edge is boundary, redirect to the boundary edge loop function.
+            # If active_edge is boundary, redirect to the boundary edge loop function.  Wait.. there is actually a use case for bounded (partial) edge loop selection on a boundary loop.  Maya has this.
+            # We could just duplicate the logic (eugh) in another elif like: if previous_active_edge.index in loop_edges and active_edge.is_boundary: and then have the final elif just become an "else:" instead of elif active_edge.is_boundary:
             if previous_active_edge.index in loop_edges and not active_edge.is_boundary:
                 #Deselect everything except the active edge.
                 select_edge(active_edge)
-
-                neighbour_edges = get_neighbour_edges(active_edge)
-                #Edges that are both in the neighbor edges and the test loop selection and aren't the active edge.
-                relevant_neighbour_edges = {e for e in neighbour_edges if e in loop_edges and not e == active_edge.index}
-#                relevant_neighbour_edges = {e for e in neighbour_edges if not e == active_edge.index}
 
                 #If the previous edge is in the relevant neighbor edges that means it's right next to it which means we want a full loop selection.
                 if previous_active_edge.index in relevant_neighbour_edges:
@@ -394,13 +386,14 @@ def get_neighbour_edges(edge):
     # For the next 2 elif checks, link_loop hopping is only technically accurate for quads.
     elif len(edge_loops) == 1:
         ring_edges = [edge_loops[0].link_loop_radial_next.link_loop_next.link_loop_next.edge.index]
-    elif len(edge_loops) > 1:
+    elif len(edge_loops) > 1: # This could use a more robust check for nonmanifold geo (more than 2 faces to 1 edge).
         ring_edges = [edge_loops[0].link_loop_radial_next.link_loop_next.link_loop_next.edge.index, edge_loops[1].link_loop_radial_next.link_loop_next.link_loop_next.edge.index]
     # This returns a lot of edges if the active_edge has 1 vert connected in pole, such as the cap of a UV Sphere. But it doesn't seem problematic.
     loop_edges = [e.index for v in edge.verts for e in v.link_edges[:] if e not in face_edges]
     
     neighbour_edges = set(ring_edges + loop_edges)
-    return neighbour_edges
+    relevant_neighbour_edges = [e for e in neighbour_edges if not e == edge.index] # Need to double check but this entire line might be redundant.  I think the previous lines already filtered out the edge.index even though that wasn't by design.
+    return relevant_neighbour_edges
 
 
 def select_edge(edge):
