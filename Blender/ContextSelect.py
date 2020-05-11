@@ -546,8 +546,7 @@ def face_loop_from_edge(edge):
 
 def loop_extension(edge, vert):
     candidates = vert.link_edges[:]
-#    if len(vert.link_loops) == 4 and vert.is_manifold:
-    if len(candidates) == 4 and vert.is_manifold: # AFAIK the length of candidates should be the same as vert.link_loops which means we can just check length of candidates instead of performing an extra operation of getting vert_link_loops.
+    if len(vert.link_loops) == 4 and vert.is_manifold:
         cruft = [edge] # The next edge obviously can't be the current edge.
         for l in edge.link_loops:
             cruft.extend([l.link_loop_next.edge, l.link_loop_prev.edge]) # The 'next' and 'prev' edges are perpendicular to the desired loop so we don't want them.
