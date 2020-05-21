@@ -592,15 +592,16 @@ def face_loop_from_edge(edge):
     loop = edge.link_loops[0]
     first_loop = loop
     cur_loop = loop
-    face_list = set() # Checking for membership in sets is faster than lists []
+    face_list = set()  # Checking for membership in sets is faster than lists []
     going_forward = True
+    dead_end = False
     while True:
         # Jump to next loop on the same edge and walk two loops forward (opposite edge)
         next_loop = cur_loop.link_loop_radial_next.link_loop_next.link_loop_next
 
         next_face = next_loop.face
         if next_face.index in face_list and prefs.terminate_self_intersects:
-            break
+            dead_end = True
         elif next_face.index not in face_list:
             if len(next_face.verts) == 4:
                 face_list.add(next_face.index)
@@ -610,15 +611,17 @@ def face_loop_from_edge(edge):
         # This probably needs a proper sanity check to make sure there even is a face before we try to call the verts of said face.
         # Same for if the loop even has faces to link to.  Maybe move the edge.link_faces test to the front?
         # I think Loopanar maybe has a manifold check somewhere in the Loop selection (not ring) regarding free-floating edges with no faces.
+        # One of the very first things we should probably do with the edge passed to the function is see if that edge is manifold.
 
         # If this is true then we've looped back to the beginning and are done
         if next_loop == first_loop:
             break
-        # If we reach a dead end because the next face is a tri or n-gon, or the next edge is the mesh boundary, or nonmanifold.
-        elif len(next_face.verts) != 4 or len(next_loop.edge.link_faces) != 2:
+        # If we reach a dead end because the next face is a tri or n-gon, or the next edge is boundary or nonmanifold.
+        elif len(next_face.verts) != 4 or len(next_loop.edge.link_faces) != 2 or dead_end:
             # If going_forward then this is the first dead end and we want to go the other way
             if going_forward:
                 going_forward = False
+                dead_end = False
                 # Return to the starting edge and go the other way
                 if len(edge.link_loops) > 1:
                     next_loop = edge.link_loops[1]
