@@ -20,7 +20,7 @@ bl_info = {
     "name": "Context Select Hybrid",
     "description": "Context-aware loop selection for vertices, edges, and faces.",
     "author": "Andreas Strømberg, nemyax, Chris Kohl",
-    "version": (0, 1, 8),
+    "version": (0, 1, 9),
     "blender": (2, 80, 0),
     "location": "",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -29,76 +29,99 @@ bl_info = {
     "category": "Mesh"
 }
 
-# ToDo: 
-# Fully implement checks for hidden geometry and prefs.ignore_hidden_geometry option. (Still need to test with instanced geometry.)
+# ToDo:
+# Still need to test with instanced geometry.  Especially the preferences like ignore hidden geometry.
 #     And then tell this guy about it: https://blender.community/c/rightclickselect/ltbbbc/
-# Add some more robust checks to validate against nonmanifold geometry like more than 2 faces connected to 1 edge and such.
-#    And--in appropriate places--tests like component.is_manifold, component.is_boundary, and (for edges only, I think) e.is_wire
+# Add some more robust checks to validate against nonmanifold geometry like more than 2 faces connected to 1 edge and such.  Some of the functions just assume that the correct components have been passed to them.
+#     And--in appropriate places--tests like component.is_manifold, component.is_boundary, and (for edges only, I think) e.is_wire
 # More speed/performance testing and improvements.
 # Implement deselection for all methods of selection (except maybe select_linked).
-#    This is actually going to be problematic because we need to track the most recent DEselected component, which Blender does not do.
-#    This addon only executes on double click.  We would have to build a helper function using the @persistent decorator to maintain a deselection list (even if said list is only 2 members long).
-#    And we would have to replace the regular view3d.select operator in at least 1 place (whatever the keymap is for deselecting; e.g. Ctrl+Click.. or Shift+Click if it's set to Toggle?)
-#    And Blender's wonky Undo system would invalidate the deselection list although that MAY not be a problem for something as simple as tracking only 2 components.
-#        Rather than using an object property to store the two most recently deselected components would it make sense to use a custom layer?
-#        https://b3d.interplanety.org/en/assigning-custom-properties-to-vertexes/  (Probably not; but it's worth investigating the performance costs involved in creating, updating, or deleting custom layers.  I still have to do my own raycasts either way..)
+#     This is actually going to be problematic because we need to track the most recent DEselected component, which Blender does not do.
+#     This addon only executes on double click.  We would have to build a helper function to replace the regular view3d.select operator for deselecting with Ctrl+Click in order to make a persistent list of deselected components per object. (Unless we could have an always-running modal)
+#     And Blender's wonky Undo system would invalidate the deselection list although that MAY not be a problem for something as simple as tracking only 2 components.
+#     One of the the first things to find out is how blender handles the regular select history internally.
+#     Because I need to know all of the operators that touch it.  For example if the select history has to coordinate the Delete operator.  When running a delete, does blender check if the selection that's being deleted is in the select history and purge it?  Or do they simply validate the things in the history later when needed by other operators?
+#     Other things that could touch upon the history might include extrusions and bevels.  Basically anything that modifies topology or vertex order.
 # Investigate doing our own raycasting. 
-#    This would be needed if we want DEselection because Blender has no 'deselection history' list. Unless we want to compare the selection history for every view3d.select click but that would be much messier.
-#    It is also a solution for the bug where double clicking on empty space causes a selection (although that one could alternatively be solved by adding 'deselect on nothing' to the default view3d.select keymap entries).
+#     This would be needed if we want DEselection because Blender has no 'deselection history' list. Unless we want to compare the selection history for every view3d.select click but that would be much messier.
+#     It is also a solution for the bug where double clicking on empty space causes a selection (although that one could alternatively be solved by adding 'deselect on nothing' to the default view3d.select keymap entries).
+#     You can't raycast onto non-mesh objects.  Replacing view3d.select is a HUGE proposition that is significantly more complicated than what the add-on is already doing.  It might be easier to hack a deselection history into the C code even though I'm a novice.
 # Find out if these selection tools can be made to work in the UV Editor. (NOTE: Probably need to set double click and shift double click operators for the UV section if the key map editor)
 # Write own loop/ring selection function for wire edges.  Loops will be easy because I don't think we have to worry about normal vector direction?  Rings will be harder because there's no face loop?  Or maybe it's the same with loop radial and then walk forward twice.  We'll see.
-#    After looking into this, this is actually much harder than I thought it would be.  Rings might be impossible, loops are HARD unless it's just a single loop (only 2 edges per vertex like the Circle object).  Will need extra steps and 2 or 3-level deep testing.
+#     After looking into this, this is actually much harder than I thought it would be.  Rings might be impossible, loops are HARD unless it's just a single loop (only 2 edges per vertex like the Circle object).  Will need extra steps and 2 or 3-level deep testing.
 # Bounded edge loop selection on a floating edge ring like the Circle primitive type. (Wire edges.)
 # Possible new user preferences:
-#    Terminate self-intersecting loops and rings at crossing point.
-#        Successfully implemented this for all manifold component selections and boundary edges! That just leaves nonmanifold selection types if I choose to do so.
-#    Allow user to specify which select_linked method they want to use on double click? (from a dropdown list)  Or, instead maybe forcibly pop up the delimit=set() in the corner instead?  Hmm but it doesn't appear to always force the popup?
-#    Preference to not use bm.select_flush_mode() at the end of the functions? This would make it so that sub-components aren't visibly selected (e.g. the edge between 2 verts) but you'd have to replace all the regular view3d.select operators as well.
+#     Double click on a boundary vertex triggers full_loop_vert_boundary instead of select_linked_pick.  This would be very easy to implement at the skip tests part of context_vert_select.  Maybe not quite as easy for the end of line but still doable.  The complexity goes inside get_bounded_selection.
+#     Terminate self-intersecting loops and rings at crossing point.
+#         Successfully implemented this for all manifold component selections and boundary edges! That just leaves nonmanifold selection types if I choose to do so.
+#     Allow user to specify which select_linked method they want to use on double click? (from a dropdown list)  Or, instead maybe forcibly pop up the delimit=set() in the corner instead?  Hmm but it doesn't appear to always force the popup?
+#     Preference to not use bm.select_flush_mode() at the end of the functions? This would make it so that sub-components aren't visibly selected (e.g. the edge between 2 verts) but you'd have to replace all the regular view3d.select operators as well.
 # Consolidate redundant code.  I still haven't figured out a proper way to do this since the main loop-getting functions are almost identical but with different methods for getting the next component and testing for dead ends...
-#    Partially done, now.  Made generic partial loop functions for manifold vertices, edges, and faces that are strung together to get full loops or bounded loops.
-# Investigate if bm.free() is needed to prevent memory leaks.  (Free the bmesh) According to the bmesh documentation this happens automatically when a script ends but there are a couple spots where I think I'm getting multiple bmeshes so it might be wise to free them up separately.
-# Investigate adding keymap entries automatically in the add-on preferences and/or the main keymap preferences.  What I know for certain is that the way Cirno's Box Select X-Ray add-on seems extraordinarily complicated and straight up does not work when I try to use his add-on (I always have to hard-code my defaults).
-# Extension methods: 
-#    [X] manifold vertex, 
-#        [X] Full loop
-#        [X] Bounded loop
-#    [ ] boundary vertex, 
-#        [p] Full loop (for the time being this works by using the edge mode)
-#        [ ] Bounded loop
-#    [ ] wire vertex, 
-#        [ ] Full loop
-#        [ ] Bounded loop
-#    [ ] nonmanifold vertex if I'm feeling spicy
-#        [ ] Full loop
-#        [ ] Bounded loop
-#    [X] manifold edge loop, 
-#        [X] Full loop
-#        [X] Bounded loop
-#    [X] manifold edge ring, 
-#        [X] Full loop
-#        [X] Bounded loop
-#    [X] boundary edge loop, 
-#        [X] Full loop
-#        [X] Bounded loop
-#    [ ] wire edge loop, 
-#        [ ] Full loop
-#        [ ] Bounded loop
-#    [ ] nonmanifold edge loop if I'm feeling spicy
-#        [ ] Full loop
-#        [ ] Bounded loop
-#    [X] face loop
-#        [X] Full loop
-#        [X] Bounded loop
-# 
-# Fix the boundary edge partial loop function to return indices?  How about we performance test the different between getting and selecting indices and components.  If there's no performance difference we should just use components directly. Other future use cases may need them.
+#     Partially done, now.  Made generic partial loop functions for manifold vertices, edges, and faces that are strung together to get full loops or bounded loops.
+#     It simply may not be possible to consolidate further.
+# Investigate if it's possible to remove or overwrite keymap entries that already exist (e.g. Blender's defaults) or if you can only add new ones.
+#     This bug report suggests you maybe can't, but perhaps a timer could be used.  https://developer.blender.org/T78417
+# Possible future upgrade for bounded selections using the "return single loop" preference: Return the loop whose end is closer to the mouse cursor.
+#     This could be accomplished by running get_neighbour_x for the active component, 
+#     then getting the /connecting/ component for each of those that attaches that component to active component,
+#     then find which of those connecting components and/or neighbour components is closest to the cursor.  (In effect this replicates the old hated behavior of needing to click near the correct edge to get a proper ring selection but for this pref it might be tolerable)
+#     As an example, say we're getting a bounded face loop.  If the preference is True AND there are multiple equal length loops,
+#         Then we get the neighbour faces of the active face, and we get the edges of the active face.  
+#         We find the active face edge that is closest to the cursor.
+#         From the neighbour faces we find the face that has the act_face_edge as one of its edges
+#         The loop we want is the one that contains that face.  It will be the only loop with a neighbour face that shares that one specific edge with the active_face
+# Extension methods:
+#     [X] manifold vertex, 
+#         [X] Full loop
+#         [X] Bounded loop
+#     [X] boundary vertex, 
+#         [X] Full loop (for the time being this works by using the edge mode)
+#         [X] Bounded loop
+#     [ ] wire vertex, 
+#         [ ] Full loop
+#         [ ] Bounded loop
+#     [ ] nonmanifold vertex if I'm feeling spicy
+#         [ ] Full loop
+#         [ ] Bounded loop
+#     [X] manifold edge loop, 
+#         [X] Full loop
+#         [X] Bounded loop
+#     [X] manifold edge ring, 
+#         [X] Full loop
+#         [X] Bounded loop
+#     [X] boundary edge loop, 
+#         [X] Full loop
+#         [X] Bounded loop
+#     [ ] wire edge loop, 
+#         [ ] Full loop
+#         [ ] Bounded loop
+#     [ ] nonmanifold edge loop if I'm feeling spicy
+#         [ ] Full loop
+#         [ ] Bounded loop
+#     [X] face loop
+#         [X] Full loop
+#         [X] Bounded loop
 # 
 # For vertices and faces.. to stop them from running twice on a bounded loop that is infinite we could do like..
 # if "infinite" in list:
     # for face in the connected faces:
-        # if that face index in list:
+        # if that face in list:
             # remove that connecting face edge loop from consideration so we don't run again in the opposite direction..
-
-
+# 
+# Need to finish implementing adjacent vert selection for context_vert_select; still using edges for boundary selection which is cheating even though we have a perfectly functional vert selector.
+#     The only blocker is setting up the logic to determine which vertex to pass to the function which I know how to do, it's just, wahhh effort.
+#
+# A more radical option would be to get the bmesh and the active/previous_active component back in the main class and do bmesh.types.BMComponent sanity checks there to determine which context_N_select to use rather than relying on mesh_select_mode.
+# That could possibly solve the Multi-select conundrum and we maybe wouldn't need to come up with logic to handle mesh_select_mode 1,0,0, 1,1,0, 1,0,1, 1,1,1, 0,1,0, 0,1,1, and 0,0,1 all individually.
+# 
+# Also if I get my bmesh back in the main class I could move the if len(bm.select_history) == 0: test up there as well.
+#     Related to this, the main 3 context_N_select functions could actually return new_sel back to OBJECT_OT_context_select and let it do the actual selecting.
+#     and then move that chunk at the bottom of all 3 with the select flush and the bmesh update_edit_mesh into OBJECT_OT_context_select as well to reduce code duplication.  Add a mode check so that we can handle the edge mode special case of clearing history and active edge.
+# 
+# Maybe the way to do it would be, if active and previous are the same type, use that appropriate context_N_select.  If they are different, return cancelled UNLESS the active is an edge, in which case, fire off context_edge_select with special logic 
+# to skip all the tests and just select an edge loop (since it's a double click).  I could restructure that function to use Modes (loop, ring, bounded?) perhaps.  Even if I don't this will be the most complicated function of the 3 just due to the many different edge types and selections.
+# 
+# Figure out how to stop bounded vert/face selections from unneccesarily running more than once if they hit an infinity.
 
 import bpy
 import bmesh
@@ -163,6 +186,8 @@ class ContextSelectPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "terminate_self_intersects")
         layout.prop(self, "ignore_hidden_geometry")
         layout.prop(self, "return_single_loop")
+        layout.label(text="Vertex Selection:")
+        layout.prop(self, "ignore_boundary_wires")
         layout.label(text="Edge Selection:")
         layout.prop(self, "leave_edge_active")
         layout.prop(self, "ignore_boundary_wires")
@@ -226,18 +251,17 @@ class OBJECT_OT_context_select(bpy.types.Operator):
     bl_description = ('Contextually select vertex loops, edge loops, face loops, partial edge loops, '
                      + 'partial face loops, edge rings, partial edge rings, '
                      + 'vertex boundaries, and edge boundaries.')
-#    bl_options = {'REGISTER', 'UNDO'} # Do we actually need the REGISTER option?
-    bl_options = {'UNDO'} # Do we actually need the REGISTER option?
+    bl_options = {'UNDO'}
 
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
-#    mode: bpy.props.StringProperty()
     select_modes = [
     ("SET", "Set", "Set a new selection (deselects any existing selection)", 1),
     ("ADD", "Extend", "Extend selection instead of deselecting everything first", 2),
     ]
+#    ("SUB", "Subtract", "Subtract from the existing selection", 3),
  
     mode: bpy.props.EnumProperty(items=select_modes, name="Selection Mode", description="Choose whether to set or extend selection", default="SET")
 
@@ -277,24 +301,21 @@ def context_vert_select(context, mode):
     if len(bm.select_history) == 0:
         return {'CANCELLED'}
 
+    new_sel = None
     active_vert = bm.select_history.active
     previous_active_vert = bm.select_history[len(bm.select_history) - 2]
     # Sanity check.  Make sure we're actually working with vertices.
-    # A more radical option would be to get the bmesh and the active/previous_active component back in the main class and do bmesh.types.BMComponent checks there instead to determine which context_N_select to use rather than relying on mesh_select_mode.
-    # That could possibly solve the Multi-select conundrum and we maybe wouldn't need to come up with logic to handle mesh_select_mode 1,0,0, 1,1,0, 1,0,1, 1,1,1, 0,1,0, 0,1,1, and 0,0,1 all individually.
-    # 
-    # Also if I get my bmesh back in the main class I could move the if len(bm.select_history) == 0: test up there as well.
-    # 
-    # Maybe the way to do it would be, if active and previous are the same type, use that appropriate context_N_select.  If they are different, return cancelled UNLESS the active is an edge, in which case, fire off context_edge_select with special logic 
-    # to skip all the tests and just select an edge loop (since it's a double click).  I could restructure that function to use Modes (loop, ring, bounded?) perhaps.  Even if I don't this will be the most complicated function of the 3 just due to the many different edge types and selections.
     if type(active_vert) is not bmesh.types.BMVert or type(previous_active_vert) is not bmesh.types.BMVert:
         return {'CANCELLED'}
 
     adjacent = previous_active_vert in get_neighbour_verts(active_vert)
 
+    # If the two components are not the same it would correspond to a mode of 'ADD'
     if not previous_active_vert.index == active_vert.index:
         # Do we want to do anything differently if the two verts are of different manifolds? Like if 1 is manifold and 1 is boundary do we grab a boundary loop for the mesh border or do we grab a manifold loop that's perpendicular to the boundary?  The same question applies to edge ring selections.
         # For the time being we currently are using the 2 adjacent verts to get an edge and using that edge's manifold-ness to determine what to do. (Which, in the case of 1 manifold vert and 1 boundary vert means we go perpendicular to boundary because the edge will be manifold.)
+        # That is the proper behavior, I think, because the verts are adjacent.  But what about the case where they are not adjacent?
+        # In the case of not adjacent, if the length of interior manifold edges connected to the boundary vert is less than 4 we could actually try to get a bounded vert selection starting at the boundary vert instead of the interior vert because that would be fewer iterations than starting at the interior.
         if adjacent:
             active_edge = [e for e in active_vert.link_edges if e in previous_active_vert.link_edges][0]
             if active_edge.is_manifold:
@@ -303,51 +324,43 @@ def context_vert_select(context, mode):
                 new_sel = full_loop_vert_manifold(prefs, active_vert, active_edge)
                 blork = time.perf_counter()
                 print("full_loop_vert_manifold runtime: %.20f sec" % (blork - blark))
-                for i in new_sel:
-                    bm.verts[i].select = True
             # Instead of looping through vertices we totally cheat and use the two adjacent vertices to get an edge
             # and then use that edge to get an edge loop. The select_flush_mode (which we must do anyway)
             # near the end of context_vert_select will handle converting the edge loop back into vertices.
             elif active_edge.is_boundary:
                 print("Selecting Boundary Edges Then Verts")
-                boundary_edges = full_loop_boundary_edge(prefs, active_edge)
-                for e in boundary_edges:
-                    e.select = True
-#                    bm.edges[i].select = True
+                new_sel = full_loop_edge_boundary(prefs, active_edge)
+#                boundary_verts = full_loop_vert_boundary(prefs, active_vert)  # Implement me.  Need to check for wires and intersects and pass active or previous vert.
+#            elif active_edge.is_wire:  # Implement me.
+#            elif active_edge isn't manifold  # Implement me.
         elif not adjacent:
             time_start = time.perf_counter()
-            bounded_sel = get_bounded_selection(active_vert, previous_active_vert, mode='VERT')
+            new_sel = get_bounded_selection(active_vert, previous_active_vert, mode='VERT')
             time_end = time.perf_counter()
             print("get_bounded_selection runtime: %.20f sec" % (time_end - time_start))
-            if bounded_sel:
+
+########## Delete me later.  We can delete this whole chunk for the release build because all it does is print statements.
+            if new_sel:
                 print("Selecting Bounded Vertices")
-                for i in bounded_sel:
-                    bm.verts[i].select = True
             # If no loop contains both vertices, select linked.
-            elif not bounded_sel and prefs.select_linked_on_double_click:
+            if not new_sel and prefs.select_linked_on_double_click:
                 print("No Bounded Selection")
                 print("End of Line - Selecting Linked")
-                if mode in ('SET', 'ADD'):
-                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
-                else:
-                    print("Mode is Deselect")
-                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
-#        else:
-#            if prefs.select_linked_on_double_click:
-#                print("Selecting Linked")
-#                if mode in ('SET', 'ADD'):
-#                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
-#                else:
-#                    print("Mode is Deselect")
-#                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
-    else:
-        if prefs.select_linked_on_double_click:
+    # Otherwise if they ARE the same component it would correspond to a mode of 'SET'
+    elif prefs.select_linked_on_double_click:
             print("Skip Tests - Selecting Linked")
-            if mode in ('SET', 'ADD'):
-                bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
-            else:
-                print("Mode is Deselect")
-                bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
+##########
+
+    if new_sel:
+#        print("I DO A SELECT!")
+        for v in new_sel:
+            v.select = True  # It only takes about 0.0180 sec to set 34,000 faces as selected.
+    elif not new_sel and prefs.select_linked_on_double_click:
+        if mode in ('SET', 'ADD'):
+            bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
+        else:
+            print("Mode is Deselect")
+            bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
 
     time_start = time.perf_counter()
     bm.select_history.add(active_vert)  # Re-add active_vert to history to keep it active.
@@ -367,6 +380,7 @@ def context_face_select(context, mode):
     if len(bm.select_history) == 0:
         return {'CANCELLED'}
 
+    new_sel = None
     active_face = bm.select_history.active
     previous_active_face = bm.select_history[len(bm.select_history) - 2]
     # Sanity check.  Make sure we're actually working with faces.
@@ -384,47 +398,44 @@ def context_face_select(context, mode):
 
     adjacent = previous_active_face in get_neighbour_faces(active_face)
 
+    # If the two components are not the same it would correspond to a mode of 'ADD'
     if not previous_active_face.index == active_face.index and not quads == (0, 0):  # LOL I FOUND AN ISSUE. If you select 1 face and then Shift+Double Click on EMPTY SPACE it will trigger select_linked (if the pref is true) because LMB with no modifiers is the only keymap entry that has "deselect on nothing" by default. Can I even do anything?
         if adjacent and (quads == (1, 1) or prefs.allow_non_quads_at_ends):
             print("Selecting Face Loop")
             a_edges = active_face.edges
             p_edges = previous_active_face.edges
             ring_edge = [e for e in a_edges if e in p_edges][0]
-            loop_faces = face_loop_from_edge(ring_edge, active_face)
-            for i in loop_faces:
-                bm.faces[i].select = True  # It only takes about 0.0180 sec to set 34,000 faces as selected.
+            new_sel = full_loop_face(ring_edge, active_face)
+
+            if not new_sel and prefs.select_linked_on_double_click:  # Delete me later.  We can delete this whole chunk for the release build because all it does is print statements.
+                print("End of Line 1 - Selecting Linked")
+
         elif not adjacent and (quads == (1, 1) or prefs.allow_non_quads_at_ends):
             print("Faces Not Adjacent. Trying Bounded Selection")
-            bounded_sel = get_bounded_selection(active_face, previous_active_face, mode='FACE')
-            if bounded_sel:
-                print("Selecting Bounded Faces")
-                for i in bounded_sel:
-                    bm.faces[i].select = True
+            new_sel = get_bounded_selection(active_face, previous_active_face, mode='FACE')
+
+########## Delete me later.  We can delete this whole chunk for the release build because all it does is print statements.
+            if new_sel:
+                print("Selecting bounded faces.")
             # If no loop contains both faces, select linked.
-            elif not bounded_sel and prefs.select_linked_on_double_click:
+            elif not new_sel and prefs.select_linked_on_double_click:
                 print("No Bounded Selection")
-                print("End of Line - Selecting Linked")
-                if mode in ('SET', 'ADD'):
-                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
-                else:
-                    print("Mode is Deselect")
-                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
-#        else:  # Catchall for if not prefs.allow_non_quads_at_ends
-#            if prefs.select_linked_on_double_click:
-#                print("Selecting Linked")
-#                if mode in ('SET', 'ADD'):
-#                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
-#                else:
-#                    print("Mode is Deselect")
-#                    bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
-    else:
-        if prefs.select_linked_on_double_click:
-            print("Skip Tests - Selecting Linked")
-            if mode in ('SET', 'ADD'):
-                bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
-            else:
-                print("Mode is Deselect")
-                bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
+                print("End of Line 2 - Selecting Linked")
+    # Otherwise if they ARE the same component it would correspond to a mode of 'SET'
+    elif prefs.select_linked_on_double_click:
+        print("Skip Tests - Selecting Linked")
+##########
+
+    if new_sel:
+#        print("I DO A SELECT!")
+        for f in new_sel:
+            f.select = True  # It only takes about 0.0180 sec to set 34,000 faces as selected.
+    elif not new_sel and prefs.select_linked_on_double_click:
+        if mode in ('SET', 'ADD'):
+            bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set())
+        else:
+            print("Mode is Deselect")
+            bpy.ops.mesh.select_linked_pick('INVOKE_DEFAULT', delimit=set(), deselect=True)
 
     time_start = time.perf_counter()
     bm.select_history.add(active_face)
@@ -444,15 +455,17 @@ def context_edge_select(context, mode):
     if len(bm.select_history) == 0:
         return {'CANCELLED'}
 
+    new_sel = None
     active_edge = bm.select_history.active
     previous_active_edge = bm.select_history[len(bm.select_history) - 2]
     # Sanity check.  Make sure we're actually working with edges.
     if type(active_edge) is not bmesh.types.BMEdge or type(previous_active_edge) is not bmesh.types.BMEdge:
         return {'CANCELLED'}
 
-    adjacent = previous_active_edge in get_neighbour_edges(active_edge)
+    adjacent = previous_active_edge in get_neighbour_edges(active_edge)  # Delete me later?
 
-    #If the previous edge and current edge are different we are doing a Shift+Double Click selection.
+    # If the previous edge and current edge are different we are doing a Shift+Double Click selection.
+    # This corresponds to a mode of 'ADD'
     # This could be a complete edge ring/loop, or partial ring/loop.
     if not previous_active_edge.index == active_edge.index:
         if adjacent:
@@ -462,29 +475,27 @@ def context_edge_select(context, mode):
                 if active_edge.is_manifold:
                     print("Selecting Edge Loop")
 #                    t0 = time.perf_counter()
-                    loop_edges = full_loop_edge_manifold(active_edge)
+                    new_sel = full_loop_edge_manifold(active_edge)
 #                    t1 = time.perf_counter()
 #                    print("entire_loop runtime: %.20f sec" % (t1 - t0))  # Delete me later
-                    for i in loop_edges:
-                        bm.edges[i].select = True
                 elif active_edge.is_boundary:
                     print("Selecting Boundary Edges")
-                    boundary_edges = full_loop_boundary_edge(prefs, active_edge)
-                    for e in boundary_edges:
-                        e.select = True
-#                        bm.edges[i].select = True
+                    new_sel = full_loop_edge_boundary(prefs, active_edge)
                 elif active_edge.is_wire:
                     print("Selecting Wire Edges")
-                    bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=True)  # Need to get rid of this and write our own operator to handle wire loops that can get a loop and terminate if wire > 2 at a vertex.
+                    bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=True)  # Delete me later.  Need to get rid of this and write our own operator to handle wire loops that can get a loop and terminate if wire > 2 at a vertex.
             # If they're not connected but still adjacent then we want a full edge ring.
             else:
                 print("Selecting Edge Ring")
                 tame = time.perf_counter()
-                ring_edges = edge_ring_from_edge(prefs, active_edge)
+                if active_edge.is_manifold:
+                    print("Using active_edge for ring selection")
+                    new_sel = full_ring_edge_manifold(prefs, active_edge)
+                else:
+                    print("Using previous_active_edge for ring selection")
+                    new_sel = full_ring_edge_manifold(prefs, previous_active_edge)
                 tome = time.perf_counter()
-                print("edge_ring_from_edge runtime: %.20f sec" % (tome - tame))  # Delete me later
-                for i in ring_edges:
-                    bm.edges[i].select = True
+                print("full_ring_edge_manifold runtime: %.20f sec" % (tome - tame))  # Delete me later
         # If we're not adjacent we have to test for bounded selections.
         elif not adjacent:
             print("Attempting Bounded Edge Selection")
@@ -492,46 +503,34 @@ def context_edge_select(context, mode):
             new_sel = get_bounded_selection(active_edge, previous_active_edge, mode='EDGE')  # 0.69s on my preferred test edges on the big mesh
             t1t = time.perf_counter()
             print("get_bounded_selection runtime: %.20f sec" % (t1t - t0t))  # Delete me later
-            if new_sel:
-                for i in new_sel:
-                    bm.edges[i].select = True
             # For an edge that has loop of 36,000 and ring of 18,000: 0.68 to 0.697 sec compared to 0.75 to 0.79 for the old Loopanar way.
-            else:
+            if not new_sel:  # delete me later if this doesn't work
                 if active_edge.is_manifold:
                     print("End of Line - Selecting Edge Loop")
                     tf = time.perf_counter()
-                    loop_edges = full_loop_edge_manifold(active_edge)
+                    new_sel = full_loop_edge_manifold(active_edge)
                     td = time.perf_counter()
                     print("full_loop_edge_manifold runtime: %.20f sec" % (td - tf))  # Delete me later
-                    for i in loop_edges:
-                        bm.edges[i].select = True
                 elif active_edge.is_boundary:
                     print("End of Line - Selecting Boundary Edges")
-                    boundary_edges = full_loop_boundary_edge(prefs, active_edge)
-                    for e in boundary_edges:
-                        e.select = True
-#                        bm.edges[i].select = True
+                    new_sel = full_loop_edge_boundary(prefs, active_edge)
                 elif active_edge.is_wire:
                     print("End of Line - Selecting Wire Edges")
-                    bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=True)  # Need to get rid of this and write our own operator to handle wire loops that can get a loop and terminate if wire > 2 at a vertex.
+                    bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=True)  # Delete me later. Need to get rid of this and write our own operator to handle wire loops that can get a loop and terminate if wire > 2 at a vertex.
 
     # I guess clicking an edge twice makes the previous and active the same? Or maybe the selection history is
     # only 1 item long.  Therefore we must be selecting a new loop that's not related to any previous selected edge.
+    # This corresponds to a mode of 'SET'
     else:
         if active_edge.is_manifold:
             print("Skip Tests - Selecting Edge Loop")
             tx = time.perf_counter()
-            loop_edges = full_loop_edge_manifold(active_edge)
+            new_sel = full_loop_edge_manifold(active_edge)
             ty = time.perf_counter()
             print("full_loop_edge_manifold runtime: %.20f sec" % (ty - tx))  # Delete me later
-            for i in loop_edges:
-                bm.edges[i].select = True
         elif active_edge.is_boundary:
             print("Skip Tests - Selecting Boundary Edges")
-            boundary_edges = full_loop_boundary_edge(prefs, active_edge)
-            for e in boundary_edges:
-                e.select = True
-#                bm.edges[i].select = True
+            new_sel = full_loop_edge_boundary(prefs, active_edge)
         elif active_edge.is_wire:
             print("Skip Tests - Selecting Wire Edges")
             if mode == 'SET':
@@ -539,10 +538,15 @@ def context_edge_select(context, mode):
             else:
                 bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=True)  # Need to get rid of this and write our own operator to handle wire loops that can get a loop and terminate if wire > 2 at a vertex.
 
+    if new_sel:
+#        print("I DO A SELECT!")
+        for e in new_sel:
+            e.select = True
 
     # I have no idea why clearing history matters for edges and not for verts/faces, but it seems that it does.
     bm.select_history.clear()
     # Re-adding the active_edge to keep it active alters the way chained selections work so it's a user preference.
+    # We'd have to replace view3d.select and some Blender functionality to retain active edge AND desired behavior.
     if prefs.leave_edge_active:
         bm.select_history.add(active_edge)
 #    bm.select_flush(True)
@@ -558,7 +562,7 @@ def context_edge_select(context, mode):
 # Takes a vertex and returns a set of adjacent vertices.
 def get_neighbour_verts(vertex):
     time_start = time.perf_counter()
-    edges = vertex.link_edges  # There's no nonmanifold check
+    edges = vertex.link_edges  # There's no nonmanifold check but that hasn't been a problem.
     relevant_neighbour_verts = {v for e in edges for v in e.verts if v != vertex}
     time_end = time.perf_counter()
     print("get_neighbour_verts runtime: %.10f sec" % (time_end - time_start))  # Delete me later
@@ -568,7 +572,7 @@ def get_neighbour_verts(vertex):
 # Takes a face and returns a set of connected faces.
 def get_neighbour_faces(face):
     time_start = time.perf_counter()
-    face_edges = face.edges  # There's no nonmanifold check
+    face_edges = face.edges  # There's no nonmanifold check but that hasn't been a problem.
     relevant_neighbour_faces = {f for e in face_edges for f in e.link_faces if f != face}
     time_end = time.perf_counter()
     print("get_neighbour_faces runtime: %.10f sec" % (time_end - time_start))  # Delete me later
@@ -591,14 +595,12 @@ def get_neighbour_edges(edge, mode=''):
     face_edges = {e for f in edge_faces for e in f.edges}
 
     ring_edges = []
-    if len(edge_faces) == 1 or len(edge_faces) == 2:
-        for f in edge_faces:
-            if len(f.verts) == 4:
-                # Get the only 2 verts that are not in the edge we start with.
-                target_verts = [v for v in f.verts if v not in edge.verts]
-                # Add the only edge that corresponds to those two verts.
-                ring_edges.extend([e for e in f.edges
-                                  if target_verts[0] in e.verts and target_verts[1] in e.verts])
+    for f in edge_faces:
+        if len(f.verts) == 4:
+            # Get the only 2 verts that are not in the edge we start with.
+            target_verts = [v for v in f.verts if v not in edge.verts]
+            # Add the only edge that corresponds to those two verts.
+            ring_edges.extend([e for e in f.edges if target_verts[0] in e.verts and target_verts[1] in e.verts])
 
     if edge.is_manifold:
         # Vertices connected to more or less than 4 edges are disqualified.
@@ -651,7 +653,7 @@ def select_component(component):
     component.select = True
 
 
-# Takes two components of the same type and returns a set of indices that are bounded between those two components.
+# Takes two components of the same type and returns a set of components that are bounded between them.
 def get_bounded_selection(component0, component1, mode):
     prefs = bpy.context.preferences.addons[__name__].preferences
 
@@ -668,7 +670,6 @@ def get_bounded_selection(component0, component1, mode):
         bpy.ops.wm.report_err(err_type = 'ERROR_INVALID_INPUT',
                               err_message = "ERROR: Both components must be the same type and "
                               + "must match the supplied mode.")
-        # Fuck me if someone supplies a manifold edge and a wire edge.  Need to add sanity checks that if the type of both is edge, then both must also be is_manifold, is_boundary, or is_wire, or both have len(e.linked_faces) > 2
         return {'CANCELLED'}
 
     ends = [component0, component1]
@@ -676,7 +677,7 @@ def get_bounded_selection(component0, component1, mode):
     c1 = component1
 
     if mode == 'VERT':
-        # Not implemented yet but if the len(v.link_edges) for one of the verts is 3 and the other is 4
+        # Not implemented yet but for manifold interior selections if the len(v.link_edges) for one of the verts is 3 and the other is 4
         # we could maybe use the n=3 vert as the starting vert.
         # Official Blender definitions for non-manifold vertex.  Observe that a boundary vertex is not considered non-manifold.  It is considered manifold.  So I can't use vert.is_manifold to validate that a vertex is actually manifold.
         # So I likely need to run two layers of checks.  First make sure it isn't non-manifold, and then make sure that no edges are boundary.  The first check (non-manifold) should flag if we hit non-manifold extrusions or wire.
@@ -686,14 +687,93 @@ def get_bounded_selection(component0, component1, mode):
         # 3: Is part of an edge with more than 2 faces.
         # 4: Is part of a wire edge.
         
-        if len(c0.link_edges) == 4:
-            starting_vert = c0
-        elif len(c0.link_edges) != 4 and len(c1.link_edges) == 4:
-            starting_vert = c1
-        elif len(c0.link_edges) != 4 and len(c1.link_edges) != 4:  # We have no valid path forward for boundary loops and wire loops.  We'll add those later on.  First I just want to get this working with manifold vert loops.
-            return None
+        c0_edges = c0.link_edges
+        c0_boundary = [e for e in c0_edges if e.is_boundary]
+        c0_wire = [e for e in c0_edges if e.is_wire]
 
-        connected_loops = get_bounded_verts_manifold(prefs, starting_vert, ends)
+        c1_edges = c1.link_edges
+        c1_boundary = [e for e in c1_edges if e.is_boundary]
+        c1_wire = [e for e in c1_edges if e.is_wire]
+
+        if c0.is_manifold and c1.is_manifold and not c0.is_boundary and not c1.is_boundary:  # Manifold interior
+            if len(c0_edges) == 4:
+                starting_vert = c0
+            elif len(c0_edges) != 4 and len(c1_edges) == 4:
+                starting_vert = c1
+            elif len(c0_edges) != 4 and len(c1_edges) != 4:
+                return None
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        
+        # Any boundary vert (may connect a wire or boundary intersection or non-manifold extrusion)
+        elif c0.is_boundary and c1.is_boundary:
+            if c0.is_manifold:  # Normal or "clean" boundary vert
+                starting_vert = c0
+            elif c1.is_manifold:  # Normal or "clean" boundary vert
+                starting_vert = c1
+            elif len(c0_wire) > 0 and len(c0_boundary) == 2:  # Boundary vert has wire edge but not self-intersect
+                starting_vert = c0
+            elif len(c1_wire) > 0 and len(c1_boundary) == 2:  # Boundary vert has wire edge but not self-intersect
+                starting_vert = c1
+            else:  # Only remaining possibility is a boundary intersect or non-manifold extrusion.
+                print("HOLD ONTO YOUR BUTTS!")
+                starting_vert = c0
+#                return None
+
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_boundary(prefs, starting_vert, ends)
+
+        elif c0.is_wire and c1.is_wire:  # Wire mesh only
+            return None  # For now, return none because I haven't written wire selector yet.
+
+        elif not c0.is_manifold and not c1.is_manifold and not c0.is_boundary and not c1.is_boundary and len(c0_wire) == 0 and len(c1_wire) == 0:  # Non-manifold
+            return None  # For now, return none because I haven't written non-manifold selector yet.
+
+        # And now for the hellish task of sorting out what to do if c0 and c1 have different manifolds
+
+#        NOW THAT I THINK ABOUT IT THIS COULD MAYBE BE BROKEN INTO ITS OWN FUNCTION, AKA GET_STARTING_VERT()
+#        and maybe get_starting_edge() and get_starting_face() and these can possibly be re-used in the main 3 functions?
+
+        elif c0.is_manifold and not c0.is_boundary and c1.is_boundary:  # One internal manifold and one boundary of any type
+            starting_vert = c0
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif c1.is_manifold and not c1.is_boundary and c0.is_boundary:  # One internal manifold and one boundary of any type
+            starting_vert = c1
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif c0.is_manifold and not c0.is_boundary and not c1.is_manifold and len(c1_wire) == 0:  # One internal manifold and one internal non-manifold extrusion
+            starting_vert = c0
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif c1.is_manifold and not c1.is_boundary and not c0.is_manifold and len(c0_wire) == 0:  # One internal manifold and one internal non-manifold extrusion
+            starting_vert = c1
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif not c0.is_boundary and len(c0_wire) > 0 and not c1.is_boundary and len(c1_wire) > 0:  # Two internal with a wire extrusion
+            starting_vert = c0
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif not c0.is_manifold and len(c0_wire) == 0 and not c1.is_boundary and len(c1_wire) > 0:  # One internal non-manifold edge extrusion and one internal wire extrusion
+            starting_vert = c1
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif not c1.is_manifold and len(c1_wire) == 0 and not c0.is_boundary and len(c0_wire) > 0:  # One internal non-manifold edge extrusion and one internal wire extrusion
+            starting_vert = c0
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif c0.is_boundary and len(c0_wire) > 0 and not c1.is_boundary and len(c1_wire) > 0:  # One boundary wire extrusion and one internal wire extrusion (technically this might trigger on wire verts; would need and not c1.is_wire)
+            starting_vert = c1
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+        elif c1.is_boundary and len(c1_wire) > 0 and not c0.is_boundary and len(c0_wire) > 0:  # One boundary wire extrusion and one internal wire extrusion (technically this might trigger on wire verts; would need and not c1.is_wire)
+            starting_vert = c0
+            print("Starting vert:", starting_vert.index)
+            connected_loops = get_bounded_vert_loop_manifold(prefs, starting_vert, ends)
+#        elif c0.is_boundary and len(c0_wire) > 0 and not c1.is_manifold and len(c1_wire) == 0:  # One boundary wire extrusion and one internal non-manifold edge extrusion
+            # non-functional because I haven't pioneered doing get_bounded_vert_loop_manifold starting at a boundary; it would need to know that the number of proper manifold edges connected to that vert is exactly 1 (or at least <= 4)
+
+        else:
+            return None
 
     if mode == 'EDGE':
         # Unlike face mode, edge mode has to contend with several different ways to advance through the loops to get lists.
@@ -711,22 +791,15 @@ def get_bounded_selection(component0, component1, mode):
         # elif one is wire and the other is anything else, we retun none and externally fire off whatever is the appropriate loop code for its type.
         
         c0_faces = c0.link_faces
-        c1_faces = c1.link_faces
-
         c0_loop_dirs = get_neighbour_edges(c0, mode='LOOP')  # edges
         c0_ring_dirs = get_neighbour_edges(c0, mode='RING')  # edges
+
+        c1_faces = c1.link_faces
         c1_loop_dirs = get_neighbour_edges(c1, mode='LOOP')  # edges
         c1_ring_dirs = get_neighbour_edges(c1, mode='RING')  # edges
 
         connected_loops = []
         if c0.is_manifold and c1.is_manifold:  # Manifold
-#            if len(c0_faces) == 2:  # Works both for loops or rings
-#                starting_edge = c0
-#            elif len(c0_faces) != 2 and len(c1_faces) == 2:  # Rings can end on boundary edges
-#                starting_edge = c1
-#            elif len(c0_faces) != 2 and len(c1_faces) != 2:  # This doesn't leave any path forward for wire, boundary, or non-manifold.
-#                return None
-
             starting_edge = c0
             
             if len(c0_loop_dirs):
@@ -756,10 +829,10 @@ def get_bounded_selection(component0, component1, mode):
             connected_loops = get_bounded_edge_loop_boundary(prefs, c0, ends)
 
         elif c0.is_wire and c1.is_wire:  # Wire
-            return None  # For now, return no selection because I haven't written wire selector yet.
+            return None  # For now, return none because I haven't written wire selector yet.
 
         elif len(c0_faces) > 2 and len(c1_faces) > 2:  # Non-manifold edge extrusion/intersection
-            return None  # For now, return no selection because I haven't written non-manifold selector yet.
+            return None  # For now, return none because I haven't written non-manifold selector yet.
 
         elif c0.is_manifold and (c1.is_boundary or len(c1_faces) > 2):  # Only possible bounded selection is a ring.
             print("Attempting possible c0 ring. Trying bounded ring.")
@@ -800,8 +873,10 @@ def get_bounded_selection(component0, component1, mode):
     if len(connected_loops) == 0:
         return None
     elif len(connected_loops) == 1:
-        return {i for i in connected_loops[0]}  # There might be a better way of returning the components in connected_loops than this.  connected_loops itself must be a list because I need to be able to sort it but the contents inside are already sets.
+        # There might be a better way of returning the components in connected_loops than this.  connected_loops itself must be a list because I need to be able to sort it but the contents inside are already sets.
+        return {i for i in connected_loops[0]}  # Wait, couldn't I just return connected_loops[0] ?
     # If multiple bounded loop candidates of identical length exist, this pref returns only the first loop.
+    # Possible future upgrade: Return the loop whose end is closer to the mouse cursor.
     elif prefs.return_single_loop and len(connected_loops) > 1:
         return {i for i in connected_loops[0]}  # Because creating a new set from scratch that pulls every i from each loop is probably adding extra time.
     else:
@@ -810,66 +885,115 @@ def get_bounded_selection(component0, component1, mode):
 
 # ##################### Bounded Selections ##################### #
 
-# Takes 2 separated verts, and which vert to start with, and returns a list of loop lists of vertex indices.
-def get_bounded_verts_manifold(prefs, starting_vert, ends):
+# Takes 2 separated verts, and which vert to start with, and returns a list of loop lists of vertices.
+def get_bounded_vert_loop_manifold(prefs, starting_vert, ends):
     begintime = time.perf_counter()
-    candidate_dirs = starting_vert.link_loops  # loops
+    candidate_dirs = [loop for loop in starting_vert.link_loops]  # loops   # This does not work for certain cases of flipped/reversed normals.
     connected_loops = []
     reference_list = set()
 
-    # There must be a clever way to skip running this 4 times if we bump into 1 or even 2 infinite loops.
-    # 0. Get the 4 edges connected to the starting_vert  OR ACTUALLY USE THE LOOPS
-    # 1. Designate the first edge as edge_a
-    # 2. Use the BM_vert_step_fan_loop to get its opposite edge
-    # 3. Eliminate edge_a and its opposite from the list in step 0
-    # 4. Now pick either of the two remaining edges and designate it as edge_b
-    # 5. Repeat step 2
-    # 6. Get the edge.other_vert(starting_vert) for the edge_a edge pair and the edge_b edge pair
-    # 7. With this information in hand, if we hit an infinite loop from edge_a to its opposite or edge_b to its opposite
-    #    we can eliminate that opposite edge's loop from candidate_dirs since it will be wasted effort to get the same 
-    #    infinite loop, just in the opposite direction.
-    # 
-    # The only caveat here is that I'm not sure if popping loops from candidate_dirs WHILE operating on candidate_dirs will break.
-    # 
-    # Also the same basic logic should be implemented for get_bounded_face_loop by picking the first loop belonging to the face 
-    # and getting the loop.link_loop_radial_next.face (instead of the edge.other_vert) to check against
-    # and then getting the first loop's loop.link_loop_next.link_loop_next.link_loop_radial_next.face for the opposite connected face
-    # To move perpendicular to get the other face pair it's as easy as loop.link_loop_next since we're never leaving the starting face.
     for loop in candidate_dirs:
-        starting_edge = loop.edge
-        # What's the performance impact of .clear() and would it make much difference to just move reference_list = set() down here?
-        reference_list.clear()  # delete me later maybe? This is an experimental idea to deal with unwanted early terminations from self-intersects but I have not tested the full ramifications.
-        new_verts = partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list, ends)
-        if ends[0].index in new_verts and ends[1].index in new_verts:
-            print("Appending new list.")
-            connected_loops.append([c for c in new_verts])
+        if loop != "skip":
+            loop_edge = loop.edge
+            loop_vert = loop.vert
+            print("Starting loop with edge:", loop.edge.index)
+            # What's the performance impact of .clear() and would it make much difference to just move reference_list = set() down here?
+            reference_list.clear()  # delete me later maybe? This is an experimental idea to deal with unwanted early terminations from self-intersects but I have not tested the full ramifications.
+            partial_list = partial_loop_vert_manifold(prefs, loop, loop_edge, loop_vert, reference_list, ends)
+            if "infinite" in partial_list:
+                print("Discarding an infinite.")
+                partial_list.discard("infinite")
+#                for loop in candidate_dirs:  # NOTE: This optimization has a drawback if active_vert is self-intersect.
+#                    if loop != "skip" and loop.edge.other_vert(starting_vert) in reference_list:  # THIS TECHNIQUE NEEDS TO BE TESTED WITH THE VARIOUS ADD-ON PREFERENCES LIKE TERMINATE SELF-INTERSECTS.
+#                        print("removing loop edge:", loop.edge.index)
+#                        print("loop.index is:", candidate_dirs.index(loop))
+#                        candidate_dirs[candidate_dirs.index(loop)] = "skip"
+                #if len(starting_vert.link_edges) == 4:
+                    #opposite_loop = BM_vert_step_fan_loop(loop_edge, loop)
+                    #opposite_vert = opposite_loop.edge.other_vert(starting_vert)
+                    #if opposite_vert == None:
+                        #print("Loop went wrong way? Trying other loop.")
+                        #opposite_loop = BM_vert_step_fan_loop(loop_edge, loop.link_loop_radial_next)
+#                    candidate_dirs[candidate_dirs.index(opposite_loop)] = "skip"
+                    #print("Opposite vert:", opposite_loop.edge.other_vert(starting_vert))
+                opposite_edge = loop_extension(loop_edge, starting_vert)
+                for l in opposite_edge.link_loops:
+                    if l in candidate_dirs:
+                        print("Removing loop with edge", l.edge.index)
+                        candidate_dirs[candidate_dirs.index(l)] = "skip"
+#            if ends[0] in partial_list:
+#                print("Vertex", ends[0].index, "is in the list.")
+            if ends[0] in partial_list and ends[1] in partial_list:
+                print("Connected Loop match. Adding partial_list to connected_loops.")
+                connected_loops.append([c for c in partial_list])
 
     endtime = time.perf_counter()
-    print("get_bounded_verts_manifold runtime: %.20f sec" % (endtime - begintime))  # Delete me later
+    print("get_bounded_vert_loop_manifold runtime: %.20f sec" % (endtime - begintime))  # Delete me later
     return connected_loops
 
 
-# Takes 2 separated faces, and which face to start with, and returns a list of loop lists of face indices.
+# Takes 2 separated boundary vertices, and which vertex to start with, and returns a list of loop lists of vertices.
+# NOTE: Must determine externally which vert to start with, whether the active or previous active
+# e.g. it is desirable to start on a boundary vert with only 2 boundary edges and no wire edges
+def get_bounded_vert_loop_boundary(prefs, starting_vert, ends):
+    connected_loops = []
+    if prefs.ignore_hidden_geometry:
+        edges = [e for e in starting_vert.link_edges if e.is_boundary]
+    else:
+        edges = [e for e in starting_vert.link_edges if e.is_boundary and not e.hide]
+
+    for e in edges:
+        tp = time.perf_counter()
+        partial_list = partial_loop_vert_boundary(prefs, starting_vert, e, ends)  # Swap the order of e and starting_vert
+        tq = time.perf_counter()
+        print("Time to get partial_list: %.20f sec" % (tq - tp))  # Delete me later
+#        print("Partial list is:", [e.index for e in partial_list])
+        if "infinite" not in partial_list:
+#            partial_list.add(ends[1])  # 'Cause I'm a lazy bugger, here is a glorious hack.  Ugh, it doesn't work correctly with terminate_self_intersects.
+            if ends[0] in partial_list and ends[1] in partial_list:
+                print("Connected Loop match. Adding partial_list to connected_loops.")
+                connected_loops.append([c for c in partial_list])
+        else:
+            break  # If we're infinite then there is no bounded selection to get
+    return connected_loops
+
+
+# Takes 2 separated faces, and which face to start with, and returns a list of loop lists of faces.
 def get_bounded_face_loop(prefs, starting_face, ends):
     # Must use the face's loops instead of its edges because edge's loop[0] could point to a different face.
-    candidate_dirs = starting_face.loops
+    candidate_dirs = starting_face.loops[:]  # Delete me later?  Specifically the slicing if it's a performance issue.  Run a test with this as a slice vs a list comprehension on a very dense mesh.
     connected_loops = []
     reference_list = set()
 
     begintime = time.perf_counter()
 
-    for loop in candidate_dirs:  # Theoretically there is potential for one or more of the loops to loop back on the starting component (infinite) and it would be wasteful to run the other loop but that's less likely in a bounded selection.
-        reference_list.clear()  # delete me later maybe? This is an experimental idea to deal with unwanted early terminations from self-intersects but I have not tested the full ramifications.
-        new_faces = partial_loop_face(prefs, loop, starting_face, reference_list, ends)
-        if ends[0].index in new_faces and ends[1].index in new_faces:
-            connected_loops.append([c for c in new_faces])
+    for loop in candidate_dirs:
+        if loop != "skip":
+            reference_list.clear()  # delete me later maybe? This is an experimental idea to deal with unwanted early terminations from self-intersects but I have not tested the full ramifications.
+            print("Starting loop with edge:", loop.edge.index)
+            partial_list = partial_loop_face(prefs, loop, starting_face, reference_list, ends)
+            if "infinite" in partial_list:
+                print("Discarding an infinite.")
+                partial_list.discard("infinite")
+#                for loop in candidate_dirs:  # NOTE: This optimization has a drawback if parallel face loops touch.
+#                    if loop != "skip" and loop.link_loop_radial_next.face in partial_list:  # THIS TECHNIQUE NEEDS TO BE TESTED WITH THE VARIOUS ADD-ON PREFERENCES LIKE TERMINATE SELF-INTERSECTS.
+#                        print("removing loop edge:", loop.edge.index)
+#                        print("loop.index is:", candidate_dirs.index(loop))
+#                        candidate_dirs[candidate_dirs.index(loop)] = "skip"
+                if len(starting_face.verts) == 4 and loop.link_loop_next.link_loop_next != "skip":  # This optimization is surgical and without the drawback of the commented out method above.
+                    print("removing loop edge:", loop.link_loop_next.link_loop_next.edge.index)
+                    print("loop.index is:", candidate_dirs.index(loop.link_loop_next.link_loop_next))
+                    candidate_dirs[candidate_dirs.index(loop.link_loop_next.link_loop_next)] = "skip"
+            if ends[0] in partial_list and ends[1] in partial_list:
+                print("Connected Loop match. Adding partial_list to connected_loops.")
+                connected_loops.append([c for c in partial_list])
 
     endtime = time.perf_counter()
     print("get_bounded_face_loop runtime: %.20f sec" % (endtime - begintime))  # Delete me later
     return connected_loops
 
 
-# Takes 2 separated edges, and which edge to start with, and returns a list of loop lists of edge indices.
+# Takes 2 separated edges, and which edge to start with, and returns a list of loop lists of edges.
 def get_bounded_edge_loop_manifold(prefs, starting_edge, ends):
     starting_loop = starting_edge.link_loops[0]
     loops = [starting_loop, starting_loop.link_loop_next]
@@ -883,7 +1007,7 @@ def get_bounded_edge_loop_manifold(prefs, starting_edge, ends):
         tq = time.perf_counter()
         print("Time to get partial_list: %.20f sec" % (tq - tp))  # Delete me later
         if "infinite" not in partial_list:
-            if ends[0].index in partial_list and ends[1].index in partial_list:
+            if ends[0] in partial_list and ends[1] in partial_list:
                 connected_loops.append([c for c in partial_list])
                 print("Connected Loop match. Adding partial_list to connected_loops.")
         else:
@@ -891,7 +1015,7 @@ def get_bounded_edge_loop_manifold(prefs, starting_edge, ends):
     return connected_loops
 
 
-# Takes 2 separated edges, and which edge to start with, and returns a list of ring lists of edge indices.
+# Takes 2 separated edges, and which edge to start with, and returns a list of ring lists of edges.
 def get_bounded_edge_ring_manifold(prefs, starting_edge, ends):
     print("ends:", [e.index for e in ends])
     print("Starting edge", starting_edge.index)
@@ -907,34 +1031,15 @@ def get_bounded_edge_ring_manifold(prefs, starting_edge, ends):
         tq = time.perf_counter()
         print("Time to get partial_list: %.20f sec" % (tq - tp))  # Delete me later
         if "infinite" not in partial_list:
-            if ends[0].index in partial_list and ends[1].index in partial_list:
+            if ends[0] in partial_list and ends[1] in partial_list:
                 connected_loops.append([c for c in partial_list])
                 print("Connected Loop match. Adding partial_list to connected_loops.")
         else:
             break  # If we're infinite then there is no bounded selection to get
-
-#    if prefs.terminate_self_intersects and len(connected_loops) == 0:
-#        print("Try the other edge.")
-#        clear_tags(bm, mode='FACE')
-#        other_edge = [e for e in ends if e is not starting_edge][0]
-#        print("Other edge", other_edge.index)
-#        starting_loop = other_edge.link_loops[0]
-#        loops = [starting_loop, starting_loop.link_loop_radial_next]
-#        for loop in loops:
-#            tp = time.perf_counter()
-#            partial_list = partial_ring_edge(prefs, loop, other_edge, ends)
-#            tq = time.perf_counter()
-#            print("Time to get partial_list: %.20f sec" % (tq - tp))  # Delete me later
-#            if "infinite" not in partial_list:
-#                if ends[0].index in partial_list and ends[1].index in partial_list:
-#                    connected_loops.append([c for c in partial_list])
-#                    print("Connected Loop match. Adding partial_list to connected_loops.")
-#            else:
-#                break  # If we're infinite then there is no bounded selection to get
     return connected_loops
 
 
-# Takes 2 separated boundary edges, and which edge to start with, and returns a list of loop lists of edge indices.
+# Takes 2 separated boundary edges, and which edge to start with, and returns a list of loop lists of edges.
 def get_bounded_edge_loop_boundary(prefs, starting_edge, ends):
     connected_loops = []
     verts = starting_edge.verts
@@ -948,7 +1053,7 @@ def get_bounded_edge_loop_boundary(prefs, starting_edge, ends):
         if "infinite" not in partial_list:
 #            partial_list.add(ends[1])  # 'Cause I'm a lazy bugger, here is a glorious hack.  Ugh, it doesn't work correctly with terminate_self_intersects.
             if ends[0] in partial_list and ends[1] in partial_list:
-                connected_loops.append([c.index for c in partial_list])
+                connected_loops.append([c for c in partial_list])
                 print("Connected Loop match. Adding partial_list to connected_loops.")
         else:
             break  # If we're infinite then there is no bounded selection to get
@@ -972,22 +1077,46 @@ def full_loop_vert_manifold(prefs, starting_vert, starting_edge):
 
     for loop in loops:
         starting_vert = loop.vert
-        new_verts = partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list)
-        if "infinite" not in new_verts:
-            vert_list.update(new_verts)
+        partial_list = partial_loop_vert_manifold(prefs, loop, starting_edge, starting_vert, reference_list)
+        if "infinite" not in partial_list:
+            vert_list.update(partial_list)
         else:
-            new_verts.discard("infinite")
-            vert_list.update(new_verts)
+            partial_list.discard("infinite")
+            vert_list.update(partial_list)
             break  # Early out so we don't get the same loop twice.
-    endtime = time.perf_counter()
     return vert_list
 
 
-# Takes an edge and returns a loop of face indices (as a set) for the ring direction of that edge.
-def face_loop_from_edge(edge, face):
+# Takes a boundary vertex and returns a list of boundary vertices.
+# NOTE: Must determine externally which vert to start with, whether the active or previous active 
+# e.g. it is desirable to start on a boundary vert with only 2 boundary edges and no wire edges
+def full_loop_vert_boundary(prefs, starting_vert):
+    t0 = time.perf_counter()  # Delete me later
+    if prefs.ignore_hidden_geometry:
+        edges = [e for e in starting_vert.link_edges if e.is_boundary]
+    else:
+        edges = [e for e in starting_vert.link_edges if e.is_boundary and not e.hide]
+    vert_list = set()
+
+    for e in edges:
+        partial_list = partial_loop_vert_boundary(prefs, starting_vert, e)  # Swap the order of e and starting_vert
+        if "infinite" not in partial_list:
+            vert_list.update(partial_list)
+        else:
+            print("Discard infinite.")
+            partial_list.discard("infinite")
+            vert_list.update(partial_list)
+            break  # Early out so we don't get the same loop twice.
+    t1 = time.perf_counter()
+    print("full_loop_vert_boundary runtime: %.20f sec" % (t1 - t0))  # Delete me later
+    return vert_list
+
+
+# Takes an edge and face and returns a loop of face indices (as a set) for the ring direction of that edge.
+def full_loop_face(edge, face):
     t0 = time.perf_counter()  # Delete me later
     if len(edge.link_loops) > 2:
-        return []
+        return None
 
     prefs = bpy.context.preferences.addons[__name__].preferences
     starting_loop = [loop for loop in edge.link_loops if loop in face.loops][0]
@@ -997,15 +1126,15 @@ def face_loop_from_edge(edge, face):
 
     for loop in loops:
         starting_face = loop.face
-        new_faces = partial_loop_face(prefs, loop, starting_face, reference_list)
-        if "infinite" not in new_faces:
-            face_list.update(new_faces)
+        partial_list = partial_loop_face(prefs, loop, starting_face, reference_list)
+        if "infinite" not in partial_list:
+            face_list.update(partial_list)
         else:
-            new_faces.discard("infinite")
-            face_list.update(new_faces)
+            partial_list.discard("infinite")
+            face_list.update(partial_list)
             break  # Early out so we don't get the same loop twice.
     t1 = time.perf_counter()
-    print("face_loop_from_edge runtime: %.20f sec" % (t1 - t0))  # Delete me later
+    print("full_loop_face runtime: %.20f sec" % (t1 - t0))  # Delete me later
     return face_list
 
 # Takes an edge and returns a full loop of edge indices.
@@ -1032,7 +1161,7 @@ def full_loop_edge_manifold(edge):
 
 
 # Takes an edge and returns a ring of edge indices (as a set) for that edge.
-def edge_ring_from_edge(prefs, starting_edge):
+def full_ring_edge_manifold(prefs, starting_edge):
     starting_loop = starting_edge.link_loops[0]
     loops = [starting_loop, starting_loop.link_loop_radial_next]
     edge_list = set()
@@ -1054,7 +1183,7 @@ def edge_ring_from_edge(prefs, starting_edge):
 
 
 # Takes a boundary edge and returns a list of boundary edge indices.
-def full_loop_boundary_edge(prefs, edge):
+def full_loop_edge_boundary(prefs, edge):
     t0 = time.perf_counter()  # Delete me later
     verts = edge.verts
     edge_list = set()
@@ -1069,23 +1198,23 @@ def full_loop_boundary_edge(prefs, edge):
             edge_list.update(new_edges)
             break  # Early out so we don't get the same loop twice.
     t1 = time.perf_counter()
-    print("full_loop_boundary_edge runtime: %.20f sec" % (t1 - t0))  # Delete me later
+    print("full_loop_edge_boundary runtime: %.20f sec" % (t1 - t0))  # Delete me later
     return edge_list
 
 
 # ##################### Partial Loop (Fragment) Selections ##################### #
 
-"""Write a better description than this."""
-# Takes a loop, reference edge, reference vertex, and returns a set of edge indices starting at the edge until reaching a dead end
-def partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list, ends=''):
+# Takes a loop, reference edge and vertex, and returns a set of verts starting at the vert until reaching a dead end.
+# For a bounded selection between two vertices it also requires the two end vertices for dead end validation.
+def partial_loop_vert_manifold(prefs, loop, starting_edge, starting_vert, reference_list, ends=''):
     e_step = starting_edge
     pcv = starting_vert  # Previous Current Vert (loop's vert)
     pov = starting_edge.other_vert(pcv)  # Previous Other Vert
-    partial_list = {pcv.index}
+    partial_list = {pcv}
     if not ends:
-        reference_list.add(pov.index)
+        reference_list.add(pov)
     while True:
-        next_loop = BM_vert_step_fan_loop(e_step, loop)  # Pass the edge and its starting vert to loop_extension
+        next_loop = BM_vert_step_fan_loop(e_step, loop)  # Pass the starting_edge and its loop
         if next_loop:  # If loop_extension returns an edge, keep going.
             e_step = next_loop.edge
             
@@ -1093,7 +1222,22 @@ def partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list,
             cur_vert = next_loop.vert
             oth_vert = next_loop.edge.other_vert(next_loop.vert)
             rad_vert = next_loop.link_loop_radial_next.vert
+            
+#            print("PCV:", pcv.index)
+#            print("POV:", pov.index)
+#            print("cur_vert:", cur_vert.index)
+#            print("oth_vert:", oth_vert.index)
+#            print("rad_vert:", rad_vert.index)
 
+# Maybe we should set the e_step here as well?
+# Maybe we can try to determine the proper 90 degree perpendicular edge to feed BM_vert_step_fan_loop instead of
+# feeding the identical loop edge?  Could this be used to set the proper direction? 
+# (the same way the full vert loop can go either way when setting the correct starting loop?)
+# Maybe we can get the e_step or the loop from the edge.other_vert(pcv) if the linked edge from the other_vert
+# is connected to the same face as the loop.face? (instead of trying to find out if link_loop_next or link_loop_prev is right?)
+
+# loop is the loop we are following, and the reference edge is 90 degrees, so it is either link_next.edge or link_prev.edge
+# and the way we determine that is if the loop.edge.other_vert(pcv) is in the link_next.edge or link_prev.edge
             if cur_vert == rad_vert and oth_vert != pcv:
                 loop = next_loop.link_loop_next
                 pcv = oth_vert
@@ -1107,12 +1251,15 @@ def partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list,
                 pcv = oth_vert
                 pov = cur_vert
             else:
+#                loop = next_loop.link_loop_radial_next.link_loop_next  # NOT USING THIS YET BECAUSE OF BUGS
+#                pcv = cur_vert
+#                pov = oth_vert
                 print("Y U NO GO?")
                 bpy.ops.wm.report_err(err_type = 'ERROR',
                                       err_message = "ERROR: Wot in Tarnation is this?")
                 return {'CANCELLED'}
 
-            reference_list.add(pov.index)
+            reference_list.add(pov)
 #            ts = time.perf_counter()
             # Check to see if next component matches dead end conditions
             if not ends:
@@ -1124,9 +1271,9 @@ def partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list,
 
             # Add component to list.
             if not prefs.ignore_hidden_geometry and not e_step.hide:  # This is a very un-ideal way to do this.
-                partial_list.add(pcv.index)  # It would be better if the dead_end test could break before here.
+                partial_list.add(pcv)  # It would be better if the dead_end test could break before here.
             elif prefs.ignore_hidden_geometry:
-                partial_list.add(pcv.index)
+                partial_list.add(pcv)
 
             if dead_end:
                 break
@@ -1137,10 +1284,54 @@ def partial_loop_vert(prefs, loop, starting_edge, starting_vert, reference_list,
     return partial_list  # Return the completed loop
 
 
-# Takes a BMesh loop and its connected starting face and returns a loop of face indices until hitting a dead end.
+# Takes a vertex and connected edge and returns a set of boundary verts starting at the vert until reaching a dead end.
+# For a bounded selection between two vertices it also requires the two end vertices for dead end validation.
+def partial_loop_vert_boundary(prefs, starting_vert, starting_edge, ends=''):
+    cur_edges = [starting_edge]
+    final_selection = set()
+    visited_edges = {starting_edge}
+    visited_verts = {starting_vert}
+#    print("==========BEGIN!==========")
+#    print("starting_vert:", starting_vert.index)
+    loop = 0
+    while True:
+        edge_verts = [v for e in cur_edges for v in e.verts if v not in visited_verts]
+        new_edges = []
+        for v in edge_verts:
+            linked_edges = {e for e in v.link_edges if e.is_boundary or e.is_wire}  # is_intersect set to > 2
+            for e in linked_edges:
+#                print("e:", e.index)
+                if not ends:
+                    dead_end = dead_end_boundary_vert(prefs, v, e, starting_vert, linked_edges, visited_verts)
+                else:
+                    dead_end = dead_end_boundary_vert(prefs, v, e, starting_vert, linked_edges, visited_verts, ends)
+                if dead_end:  # This might be wrong logic but I need a way to NOT add the edge if it is hidden.
+                    visited_verts.add(v)  # but this might leave 1 edge not selected. But it prevents the edge from being used in cur_edges
+                else:
+                    visited_verts.add(v)
+                    if e not in visited_edges and not e.is_wire:
+                        new_edges.append(e)
+
+        if len(new_edges) == 0:
+#            print("Break!")
+            break
+        else:
+#            print("Next Edges: " + str([e.index for e in new_edges]))
+            cur_edges = new_edges
+            if not ends:
+                if loop == 1:  # This is a stupid hack but I need to be able to iterate the first vert again
+                    visited_verts.discard(starting_vert)
+#                final_selection.discard(starting_edge)
+                loop +=1
+#            print("-----Loop-----")
+#    print("Boundary vert indices are: ", [v.index for v in visited_verts])
+    return visited_verts
+
+
+# Takes a BMesh loop and its connected starting face and returns a loop of faces until hitting a dead end.
 # For a bounded selection between two faces it also requires the two end faces for dead end validation.
 def partial_loop_face(prefs, cur_loop, starting_face, reference_list, ends=''):
-    partial_list = {starting_face.index}
+    partial_list = {starting_face}
     while True:
         # Jump to next loop on the same edge and walk two loops forward (opposite edge)
         next_loop = cur_loop.link_loop_radial_next.link_loop_next.link_loop_next
@@ -1157,12 +1348,12 @@ def partial_loop_face(prefs, cur_loop, starting_face, reference_list, ends=''):
         # I think Loopanar maybe has a manifold check somewhere in the Loop selection (not ring) regarding free-floating edges with no faces.
 
         # Add component to list.
-        if next_face.index not in partial_list:
+        if next_face not in partial_list:
             if len(next_face.verts) == 4:
-                partial_list.add(next_face.index)
+                partial_list.add(next_face)
             elif prefs.allow_non_quads_at_ends:
-                partial_list.add(next_face.index)
-        reference_list.add(next_face.index)
+                partial_list.add(next_face)
+        reference_list.add(next_face)
         if dead_end:
             break
         # Run this part always
@@ -1171,18 +1362,19 @@ def partial_loop_face(prefs, cur_loop, starting_face, reference_list, ends=''):
     return partial_list
 
 
-# Takes a loop and reference edge and returns a set of edge indices starting at the edge until reaching a dead end
+# Takes a loop and reference edge and returns a set of edges starting at the edge until reaching a dead end.
+# For a bounded selection between two edges it also requires the two end edges for dead end validation.
 def partial_loop_edge(prefs, loop, starting_edge, reference_list, ends=''):
     e_step = starting_edge
     pcv = loop.vert  # Previous Current Vert (loop's vert)
     pov = loop.edge.other_vert(loop.vert)  # Previous Other Vert
-    partial_list = {starting_edge.index}
+    partial_list = {starting_edge}
     if not ends:
-        reference_list.add(pov.index)
+        reference_list.add(pov)
     # For these functions that include a reference_list I should test right at the beginning to see if the terminate_self_intersects
     # pref is true and only create and add components to the reference_list if it's true, if that's possible..
     while True:
-        next_loop = BM_vert_step_fan_loop(e_step, loop)  # Pass the edge and its starting vert to loop_extension
+        next_loop = BM_vert_step_fan_loop(e_step, loop)  # Pass the edge and its loop
         if next_loop:  # If loop_extension returns an edge, keep going.
             e_step = next_loop.edge
 
@@ -1209,7 +1401,7 @@ def partial_loop_edge(prefs, loop, starting_edge, reference_list, ends=''):
                                       err_message = "ERROR: Wot in Tarnation is this?")
                 return {'CANCELLED'}
 
-            reference_list.add(pov.index)
+            reference_list.add(pov)
 #            ts = time.perf_counter()
             # Check to see if next component matches dead end conditions
             if not ends:
@@ -1220,7 +1412,7 @@ def partial_loop_edge(prefs, loop, starting_edge, reference_list, ends=''):
 #            print("dead_end runtime: %.20f sec" % (te - ts))  # Delete me later
 
             # Add component to list.
-            partial_list.add(e_step.index)
+            partial_list.add(e_step)
  
             if dead_end:
                 break
@@ -1231,10 +1423,11 @@ def partial_loop_edge(prefs, loop, starting_edge, reference_list, ends=''):
     return partial_list  # Return the completed loop
 
 
-# Takes a loop and starting edge and returns a set of edge indicies starting at the edge until reaching a dead end
+# Takes a loop and starting edge and returns a set of edges starting at the edge until reaching a dead end.
+# For a bounded selection between two edges it also requires the two end edges for dead end validation.
 def partial_ring_edge(prefs, starting_loop, starting_edge, reference_list, ends=''):
     cur_loop = starting_loop
-    partial_list = {starting_edge.index}
+    partial_list = {starting_edge}
     while True:
         # Get next components
 #        next_loop = ring_extension(cur_loop)
@@ -1250,13 +1443,13 @@ def partial_ring_edge(prefs, starting_loop, starting_edge, reference_list, ends=
                 dead_end = dead_end_ring(prefs, next_edge, next_face, starting_edge, partial_list, reference_list, ends)
 
             # Add component to list.
-            if next_edge.index not in partial_list:  # Hold up, do I even need to test this? It's a set, so why bother?
+            if next_edge not in partial_list:  # Hold up, do I even need to test this? It's a set, so why bother?
                 if len(next_face.verts) == 4:
                     if not prefs.ignore_hidden_geometry and not next_face.hide:  # This is a very un-ideal way to do this.
-                        partial_list.add(next_edge.index)  # It would be better if the dead_end test could break before here.
+                        partial_list.add(next_edge)  # It would be better if the dead_end test could break before here.
                     elif prefs.ignore_hidden_geometry:
-                        partial_list.add(next_edge.index)
-                reference_list.add(next_face.index)
+                        partial_list.add(next_edge)
+                reference_list.add(next_face)
             if dead_end:  # I can't place this BEFORE the adding components to lists because it will break bounded selections.
                 break
         else:  # finite and we've reached an end
@@ -1267,6 +1460,7 @@ def partial_ring_edge(prefs, starting_loop, starting_edge, reference_list, ends=
 
 
 # Takes an edge and connected vertex and returns a set of boundary edges starting at the edge until reaching a dead end
+# For a bounded selection between two edges it also requires the two end edges for dead end validation.
 def partial_loop_edge_boundary(prefs, starting_edge, starting_vert, ends=''):
     cur_edges = [starting_edge]
     final_selection = set()
@@ -1318,41 +1512,74 @@ def partial_loop_edge_boundary(prefs, starting_edge, starting_vert, ends=''):
 def dead_end_vert(prefs, vert, edge, starting_vert, vert_list, reference_list, ends=''):
     if not ends:  # For non-bounded selections.
         # Loop is infinite and we're done
-        reached_end = vert.index == starting_vert.index
+        reached_end = vert == starting_vert
         if reached_end:
             print("Unbounded Infinity?")
             vert_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
     else:  # For bounded selections between 2 edges.
         # Looped back on self, or reached other component in a bounded selection
-        reached_end = vert.index == ends[0].index or vert.index == ends[1].index
+        reached_end = vert == ends[0] or vert == ends[1]
         if reached_end:
             print("Found the end.")
-            if vert.index == starting_vert.index:
+            if vert == starting_vert:
                 print("Bounded is Infinity?")
-#                vert_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
+                vert_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
     # Self-intersecting loop and pref doesn't allow it
-    is_intersect = prefs.terminate_self_intersects and vert.index in reference_list
+    is_intersect = prefs.terminate_self_intersects and vert in reference_list
     if is_intersect:  # Should this be removed from the reference_list?
-        print("Vert", vert.index, "in reference_list.")
-#        reference_list.remove(vert.index)
+        print("Vert", vert, "in reference_list.")
+#        reference_list.remove(vert)
     # Vertex/edge is hidden and pref to ignore hidden geometry isn't enabled
     is_hidden = not prefs.ignore_hidden_geometry and (vert.hide or edge.hide)
     return reached_end or is_intersect or is_hidden
 
 
+def dead_end_boundary_vert(prefs, vert, edge, starting_vert, linked_edges, vert_list, ends=''):
+    if not ends:  # For non-bounded selections.
+        # Loop is infinite and we're done
+        reached_end = starting_vert in vert_list and vert == starting_vert
+        if reached_end:
+            print("Infinity?")
+            vert_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
+
+        # Self-intersecting loop and pref doesn't allow it
+        is_intersect = prefs.terminate_self_intersects and len([e for e in linked_edges if e.is_boundary]) > 2
+    else:  # For bounded selections between 2 edges.
+        # Looped back on self, or reached other component in a bounded selection
+        reached_end = starting_vert in vert_list and vert == ends[0] or vert == ends[1]
+        if reached_end:
+            print("Found the end.")
+            vert_list.add(vert)  # This is a dumb hack but the upstream function won't work otherwise.
+            if starting_vert in vert_list and vert == starting_vert:
+                print("Infinity?")
+                vert_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
+
+        # For bounded selections, we always terminate here because it's too complicated to grok otherwise
+        is_intersect = len([e for e in linked_edges if e.is_boundary]) > 2
+
+    # Vertex/edge is hidden and pref to ignore hidden geometry isn't enabled
+    is_hidden = not prefs.ignore_hidden_geometry and (vert.hide or edge.hide)
+    # Vertex on the mesh boundary is connected to a wire edge and pref to ignore wires isn't enabled
+    is_wire = not prefs.ignore_boundary_wires and any([e for e in linked_edges if e.is_wire])
+    return reached_end or is_intersect or is_hidden or is_wire
+
+
 def dead_end_face(prefs, cur_loop, next_loop, next_face, starting_face, face_list, reference_list, ends=''):
     if not ends:  # For non-bounded selections.
         # Loop is infinite and we're done
-        reached_end = next_face.index == starting_face.index
+        reached_end = next_face == starting_face
         if reached_end:
             print("Infinity?")
             face_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
     else:  # For bounded selections between 2 faces.
         # Looped back on self, or reached other component in a bounded selection
-        reached_end = next_face.index == ends[0].index or next_face.index == ends[1].index
+        reached_end = next_face == ends[0] or next_face == ends[1]
+        if reached_end and next_face == starting_face:
+            print("Infinity?")
+            face_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
 
     # Self-intersecting loop and pref doesn't allow it
-    is_intersect = prefs.terminate_self_intersects and next_face.index in reference_list
+    is_intersect = prefs.terminate_self_intersects and next_face in reference_list
 #    if is_intersect:  # Delete me later probably. Should this get removed from the reference_list?
 #        next_face.tag = False
     # Face is hidden and pref to ignore hidden geometry isn't enabled
@@ -1368,21 +1595,21 @@ def dead_end_face(prefs, cur_loop, next_loop, next_face, starting_face, face_lis
 def dead_end_loop(prefs, edge, vert, starting_edge, edge_list, reference_list, ends=''):
     if not ends:  # For non-bounded selections.
         # Loop is infinite and we're done
-        reached_end = edge.index == starting_edge.index
+        reached_end = edge == starting_edge
         if reached_end:
             print("Infinity?")
             edge_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
     else:  # For bounded selections between 2 edges.
         # Looped back on self, or reached other component in a bounded selection
-        reached_end = edge.index == ends[0].index or edge.index == ends[1].index
+        reached_end = edge == ends[0] or edge == ends[1]
         if reached_end:
             print("Found the end.")
-            if edge.index == starting_edge.index:
+            if edge == starting_edge:
                 print("Infinity?")
                 edge_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
 
     # Self-intersecting loop and pref doesn't allow it
-    is_intersect = prefs.terminate_self_intersects and vert.index in reference_list
+    is_intersect = prefs.terminate_self_intersects and vert in reference_list
     if is_intersect:
         print("intersect")
     # Vertex/edge is hidden and pref to ignore hidden geometry isn't enabled
@@ -1393,21 +1620,21 @@ def dead_end_loop(prefs, edge, vert, starting_edge, edge_list, reference_list, e
 def dead_end_ring(prefs, edge, face, starting_edge, edge_list, reference_list, ends=''):
     if not ends:  # For non-bounded selections.
         # Loop is infinite and we're done
-        reached_end = edge.index == starting_edge.index
+        reached_end = edge == starting_edge
         if reached_end:
             print("Infinity?")
             edge_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
     else:  # For bounded selections between 2 edges.
         # Looped back on self, or reached other component in a bounded selection
-        reached_end = edge.index == ends[0].index or edge.index == ends[1].index
+        reached_end = edge == ends[0] or edge == ends[1]
         if reached_end:
             print("Found the end.")
-            if edge.index == starting_edge.index:
+            if edge == starting_edge:
                 print("Infinity?")
                 edge_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
 
     # Self-intersecting loop and pref doesn't allow it
-    is_intersect = prefs.terminate_self_intersects and face.index in reference_list
+    is_intersect = prefs.terminate_self_intersects and face in reference_list
 #    if is_intersect:  # Delete me later probably.  Should this get removed from the reference_list?
 #        face.tag = False
     # Face/edge is hidden and pref to ignore hidden geometry isn't enabled
@@ -1423,7 +1650,7 @@ def dead_end_ring(prefs, edge, face, starting_edge, edge_list, reference_list, e
 def dead_end_boundary_edge(prefs, edge, vert, starting_edge, linked_edges, edge_list, ends=''):
     if not ends:  # For non-bounded selections.
         # Loop is infinite and we're done
-        reached_end = starting_edge in edge_list and edge.index == starting_edge.index
+        reached_end = starting_edge in edge_list and edge == starting_edge
         if reached_end:
             print("Infinity?")
             edge_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
@@ -1432,11 +1659,11 @@ def dead_end_boundary_edge(prefs, edge, vert, starting_edge, linked_edges, edge_
         is_intersect = prefs.terminate_self_intersects and len([e for e in linked_edges if e.is_boundary]) > 2
     else:  # For bounded selections between 2 edges.
         # Looped back on self, or reached other component in a bounded selection
-        reached_end = starting_edge in edge_list and edge.index == ends[0].index or edge.index == ends[1].index
+        reached_end = starting_edge in edge_list and edge == ends[0] or edge == ends[1]
         if reached_end:
             print("Found the end.")
             edge_list.add(edge)  # This is a dumb hack but the upstream function won't work otherwise.
-            if starting_edge in edge_list and edge.index == starting_edge.index:
+            if starting_edge in edge_list and edge == starting_edge:
                 print("Infinity?")
                 edge_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
 
@@ -1461,6 +1688,7 @@ def face_extension(loop):
 # Loop extension converted from Blender's internal functions.
 def BM_vert_step_fan_loop(edge, loop):
     if len(loop.vert.link_loops) != 4:
+        print("Vert", loop.vert.index, "does not have 4 connected loops.")
         return None
     e_prev = edge
     if loop.edge == e_prev:
@@ -1493,12 +1721,14 @@ def BM_edge_other_loop(edge, loop):
 #        print("We would assert here.")  # Skipping asserts for now.
 
     if l_other.vert == loop.vert:
+#        print("Type 1")
         l_other = l_other.link_loop_prev  # Modified this one spot to get link_loop_prev instead of pass because that seemed to fix at least 1 broken case
 #        pass
     elif l_other.link_loop_next.vert == loop.vert:
+#        print("Type 2")
         l_other = l_other.link_loop_next
     else:
-        print("No matche, got stuck!")  # Skipping asserts for now.  We'll just print some nonsense instead.
+        print("No match, got stuck!")  # Skipping asserts for now.  We'll just print some nonsense instead.
         return None
     return l_other
 
