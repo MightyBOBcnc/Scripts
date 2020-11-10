@@ -20,7 +20,7 @@ bl_info = {
     "name": "Context Select Hybrid",
     "description": "Context-aware loop selection for vertices, edges, and faces.",
     "author": "Andreas Strømberg, nemyax, Chris Kohl",
-    "version": (0, 1, 9),
+    "version": (0, 2, 0),
     "blender": (2, 80, 0),
     "location": "",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -102,12 +102,6 @@ bl_info = {
 #         [X] Full loop
 #         [X] Bounded loop
 # 
-# For vertices and faces.. to stop them from running twice on a bounded loop that is infinite we could do like..
-# if "infinite" in list:
-    # for face in the connected faces:
-        # if that face in list:
-            # remove that connecting face edge loop from consideration so we don't run again in the opposite direction..
-# 
 # Need to finish implementing adjacent vert selection for context_vert_select; still using edges for boundary selection which is cheating even though we have a perfectly functional vert selector.
 #     The only blocker is setting up the logic to determine which vertex to pass to the function which I know how to do, it's just, wahhh effort.
 #
@@ -120,8 +114,7 @@ bl_info = {
 # 
 # Maybe the way to do it would be, if active and previous are the same type, use that appropriate context_N_select.  If they are different, return cancelled UNLESS the active is an edge, in which case, fire off context_edge_select with special logic 
 # to skip all the tests and just select an edge loop (since it's a double click).  I could restructure that function to use Modes (loop, ring, bounded?) perhaps.  Even if I don't this will be the most complicated function of the 3 just due to the many different edge types and selections.
-# 
-# Figure out how to stop bounded vert/face selections from unneccesarily running more than once if they hit an infinity.
+
 
 import bpy
 import bmesh
@@ -888,44 +881,33 @@ def get_bounded_selection(component0, component1, mode):
 # Takes 2 separated verts, and which vert to start with, and returns a list of loop lists of vertices.
 def get_bounded_vert_loop_manifold(prefs, starting_vert, ends):
     begintime = time.perf_counter()
-    candidate_dirs = [loop for loop in starting_vert.link_loops]  # loops   # This does not work for certain cases of flipped/reversed normals.
+    edges = [e for e in starting_vert.link_edges]
+    candidate_dirs = []
+    for e in edges:
+        loops = [loop for loop in e.link_loops]
+        candidate_dirs.append(loops[0])
     connected_loops = []
     reference_list = set()
 
     for loop in candidate_dirs:
         if loop != "skip":
+            if not prefs.ignore_hidden_geometry and loop.edge.hide:
+                continue
             loop_edge = loop.edge
-            loop_vert = loop.vert
             print("Starting loop with edge:", loop.edge.index)
-            # What's the performance impact of .clear() and would it make much difference to just move reference_list = set() down here?
-            reference_list.clear()  # delete me later maybe? This is an experimental idea to deal with unwanted early terminations from self-intersects but I have not tested the full ramifications.
-            partial_list = partial_loop_vert_manifold(prefs, loop, loop_edge, loop_vert, reference_list, ends)
+            reference_list.clear()
+            partial_list = partial_loop_vert_manifold(prefs, loop, loop_edge, starting_vert, reference_list, ends)
             if "infinite" in partial_list:
                 print("Discarding an infinite.")
                 partial_list.discard("infinite")
-#                for loop in candidate_dirs:  # NOTE: This optimization has a drawback if active_vert is self-intersect.
-#                    if loop != "skip" and loop.edge.other_vert(starting_vert) in reference_list:  # THIS TECHNIQUE NEEDS TO BE TESTED WITH THE VARIOUS ADD-ON PREFERENCES LIKE TERMINATE SELF-INTERSECTS.
-#                        print("removing loop edge:", loop.edge.index)
-#                        print("loop.index is:", candidate_dirs.index(loop))
-#                        candidate_dirs[candidate_dirs.index(loop)] = "skip"
-                #if len(starting_vert.link_edges) == 4:
-                    #opposite_loop = BM_vert_step_fan_loop(loop_edge, loop)
-                    #opposite_vert = opposite_loop.edge.other_vert(starting_vert)
-                    #if opposite_vert == None:
-                        #print("Loop went wrong way? Trying other loop.")
-                        #opposite_loop = BM_vert_step_fan_loop(loop_edge, loop.link_loop_radial_next)
-#                    candidate_dirs[candidate_dirs.index(opposite_loop)] = "skip"
-                    #print("Opposite vert:", opposite_loop.edge.other_vert(starting_vert))
                 opposite_edge = loop_extension(loop_edge, starting_vert)
                 for l in opposite_edge.link_loops:
                     if l in candidate_dirs:
                         print("Removing loop with edge", l.edge.index)
                         candidate_dirs[candidate_dirs.index(l)] = "skip"
-#            if ends[0] in partial_list:
-#                print("Vertex", ends[0].index, "is in the list.")
             if ends[0] in partial_list and ends[1] in partial_list:
                 print("Connected Loop match. Adding partial_list to connected_loops.")
-                connected_loops.append([c for c in partial_list])
+                connected_loops.append(partial_list)
 
     endtime = time.perf_counter()
     print("get_bounded_vert_loop_manifold runtime: %.20f sec" % (endtime - begintime))  # Delete me later
@@ -1064,20 +1046,23 @@ def get_bounded_edge_loop_boundary(prefs, starting_edge, ends):
 
 # Takes a starting vertex and a connected reference edge and returns a full loop of vertex indices.
 def full_loop_vert_manifold(prefs, starting_vert, starting_edge):
-#    starting_loop = starting_edge.link_loops[0]
-    edge_loops = starting_edge.link_loops
-    candidates = [loop for loop in edge_loops if loop.vert == starting_vert]
-    if len(candidates) > 0:
-        starting_loop = candidates[0]
-    else:
-        starting_loop = edge_loops[0]
-    loops = [starting_loop, starting_loop.link_loop_next]
+    if not prefs.ignore_hidden_geometry and starting_edge.hide:
+        return None
+    if len(starting_vert.link_loops) != 4:  # This should really be handled outside of this function.
+        starting_vert = starting_edge.other_vert(starting_vert)
+        if len(starting_vert.link_loops) != 4:  # Checking if both verts are unusable.
+            return None
+    opposite_edge = loop_extension(starting_edge, starting_vert)
+    loops = [starting_edge.link_loops[0], opposite_edge.link_loops[0]]
     vert_list = set()
     reference_list = set()
 
     for loop in loops:
-        starting_vert = loop.vert
-        partial_list = partial_loop_vert_manifold(prefs, loop, starting_edge, starting_vert, reference_list)
+        loop_edge = loop.edge
+        if not prefs.ignore_hidden_geometry and loop_edge.hide:
+            continue
+        
+        partial_list = partial_loop_vert_manifold(prefs, loop, loop_edge, starting_vert, reference_list)
         if "infinite" not in partial_list:
             vert_list.update(partial_list)
         else:
@@ -1211,76 +1196,47 @@ def partial_loop_vert_manifold(prefs, loop, starting_edge, starting_vert, refere
     pcv = starting_vert  # Previous Current Vert (loop's vert)
     pov = starting_edge.other_vert(pcv)  # Previous Other Vert
     partial_list = {pcv}
-    if not ends:
-        reference_list.add(pov)
+
+    time_start = time.perf_counter()
+
+    dead_end = None
     while True:
-        next_loop = BM_vert_step_fan_loop(e_step, loop)  # Pass the starting_edge and its loop
-        if next_loop:  # If loop_extension returns an edge, keep going.
+        if pov in loop.link_loop_prev.edge.verts:
+            loop = loop.link_loop_prev
+        elif pov in loop.link_loop_next.edge.verts:
+            loop = loop.link_loop_next
+
+        next_loop = BM_vert_step_fan_loop_2(e_step, loop, pov)
+        pcv = pov
+
+        if not next_loop:
+#            print("Try the other loop")
+            loop = loop.link_loop_radial_next
+            next_loop = BM_vert_step_fan_loop_2(e_step, loop, pov)
+
+        if next_loop:
             e_step = next_loop.edge
-            
-            # Can't reliably use loop_radial_next.vert as oth_vert because sometimes it's the same vert as cur_vert
-            cur_vert = next_loop.vert
-            oth_vert = next_loop.edge.other_vert(next_loop.vert)
-            rad_vert = next_loop.link_loop_radial_next.vert
-            
-#            print("PCV:", pcv.index)
-#            print("POV:", pov.index)
-#            print("cur_vert:", cur_vert.index)
-#            print("oth_vert:", oth_vert.index)
-#            print("rad_vert:", rad_vert.index)
+            pov = e_step.other_vert(pov)
+            loop = next_loop
 
-# Maybe we should set the e_step here as well?
-# Maybe we can try to determine the proper 90 degree perpendicular edge to feed BM_vert_step_fan_loop instead of
-# feeding the identical loop edge?  Could this be used to set the proper direction? 
-# (the same way the full vert loop can go either way when setting the correct starting loop?)
-# Maybe we can get the e_step or the loop from the edge.other_vert(pcv) if the linked edge from the other_vert
-# is connected to the same face as the loop.face? (instead of trying to find out if link_loop_next or link_loop_prev is right?)
-
-# loop is the loop we are following, and the reference edge is 90 degrees, so it is either link_next.edge or link_prev.edge
-# and the way we determine that is if the loop.edge.other_vert(pcv) is in the link_next.edge or link_prev.edge
-            if cur_vert == rad_vert and oth_vert != pcv:
-                loop = next_loop.link_loop_next
-                pcv = oth_vert
-                pov = cur_vert
-            elif oth_vert == pcv:
-                loop = next_loop
-                pcv = cur_vert
-                pov = oth_vert
-            elif cur_vert ==  pcv:
-                loop = next_loop.link_loop_radial_next
-                pcv = oth_vert
-                pov = cur_vert
-            else:
-#                loop = next_loop.link_loop_radial_next.link_loop_next  # NOT USING THIS YET BECAUSE OF BUGS
-#                pcv = cur_vert
-#                pov = oth_vert
-                print("Y U NO GO?")
-                bpy.ops.wm.report_err(err_type = 'ERROR',
-                                      err_message = "ERROR: Wot in Tarnation is this?")
-                return {'CANCELLED'}
-
-            reference_list.add(pov)
-#            ts = time.perf_counter()
             # Check to see if next component matches dead end conditions
             if not ends:
                 dead_end = dead_end_vert(prefs, pcv, e_step, starting_vert, partial_list, reference_list)
             else:
                 dead_end = dead_end_vert(prefs, pcv, e_step, starting_vert, partial_list, reference_list, ends)
-#            te = time.perf_counter()
-#            print("dead_end runtime: %.20f sec" % (te - ts))  # Delete me later
+            reference_list.add(pcv)
 
-            # Add component to list.
-            if not prefs.ignore_hidden_geometry and not e_step.hide:  # This is a very un-ideal way to do this.
-                partial_list.add(pcv)  # It would be better if the dead_end test could break before here.
-            elif prefs.ignore_hidden_geometry:
-                partial_list.add(pcv)
+        # Add component to list.
+        partial_list.add(pcv)  # It would be better if the dead_end test could break before here.
 
-            if dead_end:
-                break
-
-        else:  # finite and we've reached an end
+        if dead_end:
             break
-    print("Length of partial vertex list:", len(partial_list))
+
+        if not next_loop:  # finite and we've reached an end
+            break
+        
+    time_end = time.perf_counter()
+    print("partial_loop_vert_manifold runtime: %.20f sec" % (time_end - time_start))  # Delete me later
     return partial_list  # Return the completed loop
 
 
@@ -1516,7 +1472,7 @@ def dead_end_vert(prefs, vert, edge, starting_vert, vert_list, reference_list, e
         if reached_end:
             print("Unbounded Infinity?")
             vert_list.add("infinite")  # NOTE: This must be detected and handled/discarded externally.
-    else:  # For bounded selections between 2 edges.
+    else:  # For bounded selections between 2 verts.
         # Looped back on self, or reached other component in a bounded selection
         reached_end = vert == ends[0] or vert == ends[1]
         if reached_end:
@@ -1729,6 +1685,61 @@ def BM_edge_other_loop(edge, loop):
         l_other = l_other.link_loop_next
     else:
         print("No match, got stuck!")  # Skipping asserts for now.  We'll just print some nonsense instead.
+        return None
+    return l_other
+
+
+# Loop extension converted from Blender's internal functions.
+def BM_vert_step_fan_loop_2(edge, loop, vert):
+    if len(vert.link_loops) != 4:
+        print("Vert", vert.index, "does not have 4 connected loops.")
+        return None
+    e_prev = edge
+    if loop.edge == e_prev:
+        e_next = loop.link_loop_prev.edge
+    elif loop.link_loop_prev.edge == e_prev:
+        e_next = loop.edge
+    elif loop.link_loop_next.edge == e_prev:
+        e_next = loop.edge
+    else:
+        print("Unable to find a match.")
+        return None
+
+    if e_next.is_manifold:
+        return BM_edge_other_loop_2(e_prev, e_next, loop)
+    else:
+        print("Nonmanifold edge.")
+        return None
+
+
+def BM_edge_other_loop_2(e_prev, edge, loop):
+    if loop.edge == edge:
+        l_other = loop
+    else:
+        l_other = loop.link_loop_prev
+    l_other = l_other.link_loop_radial_next
+
+    if l_other.vert == loop.vert:
+#        print("Type 1")
+        if edge.other_vert(l_other.vert) == edge.other_vert(loop.vert):
+#            print("new logic a")
+            l_other = l_other.link_loop_next
+            if l_other.vert not in e_prev.verts:
+#                print("a sub-1")
+                l_other = l_other.link_loop_prev.link_loop_prev
+        else:
+#            print("old logic b")
+            l_other = l_other.link_loop_prev
+    elif l_other.link_loop_next.vert == loop.vert:
+#        print("Type 2")
+        if l_other.vert in e_prev.verts:
+#            print("new logic a")
+            l_other = l_other.link_loop_prev            
+        else:
+            l_other = l_other.link_loop_next
+#            print("old logic b")
+    else:
+        print("No match, got stuck!")
         return None
     return l_other
 
