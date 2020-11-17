@@ -20,7 +20,7 @@ bl_info = {
     "name": "Context Select Hybrid",
     "description": "Context-aware loop selection for vertices, edges, and faces.",
     "author": "Andreas Strømberg, nemyax, Chris Kohl",
-    "version": (0, 2, 0),
+    "version": (0, 2, 1),
     "blender": (2, 80, 0),
     "location": "",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -889,19 +889,43 @@ def get_bounded_vert_loop_manifold(prefs, starting_vert, ends):
     connected_loops = []
     reference_list = set()
 
+    faces = [f for f in starting_vert.link_faces]
+
     for loop in candidate_dirs:
         if loop != "skip":
             if not prefs.ignore_hidden_geometry and loop.edge.hide:
                 continue
             loop_edge = loop.edge
-            print("Starting loop with edge:", loop.edge.index)
+            print("Starting loop with edge:", loop_edge.index)
             reference_list.clear()
             partial_list = partial_loop_vert_manifold(prefs, loop, loop_edge, starting_vert, reference_list, ends)
             if "infinite" in partial_list:
                 print("Discarding an infinite.")
                 partial_list.discard("infinite")
-                opposite_edge = loop_extension(loop_edge, starting_vert)
+
+#                a_face = [f for f in faces if loop_edge in f.edges][0]
+#                stepper = [e for e in edges if e in a_face.edges and e != loop_edge][0]
+#                print("a_face:", a_face.index)
+#                print("stepper:", stepper.index)
+#
+#                d_vert = loop_edge.other_vert(starting_vert)  # Delete me. This crap doesn't work.
+#                opposite_edge = loop_extension(loop_edge, starting_vert)
+#                opposite_loop = fan_loop_extension(stepper, loop, starting_vert)  # Delete me. This crap doesn't work.
+#                opposite_loop = fan_loop_extension(loop_edge, loop.link_loop_radial_next, d_vert)  # Delete me. This crap doesn't work.
+#                opposite_loop = fan_loop_extension(loop_edge, [l for l in stepper.link_loops if l in a_face.loops][0], starting_vert)  # Delete me. This crap doesn't work.
+#                print("starting_vert:", starting_vert.index)  # Delete me. This crap doesn't work.
+#                print("other vert:", d_vert.index)  # Delete me. This crap doesn't work.
+#                print("opposite_edge:", opposite_edge.index)  # Delete me. This crap doesn't work.
+#                print("opposite_loop's edge:", opposite_loop.edge.index)  # Delete me. This crap doesn't work.
+
+#                step_loop = [l for l in a_face.loops if l.edge in edges and l.edge != loop_edge][0]
+                
+                opposite_edge = get_opposite_edge(loop_edge, starting_vert)
+                
+#                print("potato:", potato.index)
+
                 for l in opposite_edge.link_loops:
+#                for l in opposite_loop.edge.link_loops:  # Delete me. This crap doesn't work.
                     if l in candidate_dirs:
                         print("Removing loop with edge", l.edge.index)
                         candidate_dirs[candidate_dirs.index(l)] = "skip"
@@ -1052,8 +1076,11 @@ def full_loop_vert_manifold(prefs, starting_vert, starting_edge):
         starting_vert = starting_edge.other_vert(starting_vert)
         if len(starting_vert.link_loops) != 4:  # Checking if both verts are unusable.
             return None
-    opposite_edge = loop_extension(starting_edge, starting_vert)
+#    opposite_edge = loop_extension(starting_edge, starting_vert)
+    opposite_edge = get_opposite_edge(starting_edge, starting_vert)
     loops = [starting_edge.link_loops[0], opposite_edge.link_loops[0]]
+#    opposite_loop = fan_loop_extension(starting_edge, starting_edge.link_loops[0], starting_vert)  # Delete me. This crap doesn't work.
+#    loops = [starting_edge.link_loops[0], opposite_loop]  # Delete me. This crap doesn't work.
     vert_list = set()
     reference_list = set()
 
@@ -1193,46 +1220,38 @@ def full_loop_edge_boundary(prefs, edge):
 # For a bounded selection between two vertices it also requires the two end vertices for dead end validation.
 def partial_loop_vert_manifold(prefs, loop, starting_edge, starting_vert, reference_list, ends=''):
     e_step = starting_edge
-    pcv = starting_vert  # Previous Current Vert (loop's vert)
-    pov = starting_edge.other_vert(pcv)  # Previous Other Vert
-    partial_list = {pcv}
+    pv = starting_vert  # Previous Vert
+    cv = starting_edge.other_vert(starting_vert)  # Current Vert
+    partial_list = {pv}
 
     time_start = time.perf_counter()
-
-    dead_end = None
     while True:
-        if pov in loop.link_loop_prev.edge.verts:
+        if cv in loop.link_loop_prev.edge.verts:
             loop = loop.link_loop_prev
-        elif pov in loop.link_loop_next.edge.verts:
+        elif cv in loop.link_loop_next.edge.verts:
             loop = loop.link_loop_next
 
-        next_loop = BM_vert_step_fan_loop_2(e_step, loop, pov)
-        pcv = pov
-
-        if not next_loop:
-#            print("Try the other loop")
-            loop = loop.link_loop_radial_next
-            next_loop = BM_vert_step_fan_loop_2(e_step, loop, pov)
+        pv = cv
+        next_loop = fan_loop_extension(e_step, loop, cv)
 
         if next_loop:
             e_step = next_loop.edge
-            pov = e_step.other_vert(pov)
+            cv = e_step.other_vert(cv)
             loop = next_loop
 
             # Check to see if next component matches dead end conditions
             if not ends:
-                dead_end = dead_end_vert(prefs, pcv, e_step, starting_vert, partial_list, reference_list)
+                dead_end = dead_end_vert(prefs, pv, e_step, starting_vert, partial_list, reference_list)
             else:
-                dead_end = dead_end_vert(prefs, pcv, e_step, starting_vert, partial_list, reference_list, ends)
-            reference_list.add(pcv)
+                dead_end = dead_end_vert(prefs, pv, e_step, starting_vert, partial_list, reference_list, ends)
 
-        # Add component to list.
-        partial_list.add(pcv)  # It would be better if the dead_end test could break before here.
-
-        if dead_end:
-            break
-
-        if not next_loop:  # finite and we've reached an end
+            reference_list.add(pv)
+            # Add component to list.
+            partial_list.add(pv)  # It would be better if the dead_end test could break before here?
+            if dead_end:
+                break
+        else:  # finite and we've reached an end
+            partial_list.add(pv)
             break
         
     time_end = time.perf_counter()
@@ -1331,7 +1350,7 @@ def partial_loop_edge(prefs, loop, starting_edge, reference_list, ends=''):
     # pref is true and only create and add components to the reference_list if it's true, if that's possible..
     while True:
         next_loop = BM_vert_step_fan_loop(e_step, loop)  # Pass the edge and its loop
-        if next_loop:  # If loop_extension returns an edge, keep going.
+        if next_loop:  # If loop extension returns an edge, keep going.
             e_step = next_loop.edge
 
             # Can't reliably use loop_radial_next.vert as oth_vert because sometimes it's the same vert as cur_vert
@@ -1642,6 +1661,10 @@ def face_extension(loop):
 
 
 # Loop extension converted from Blender's internal functions.
+# https://developer.blender.org/diffusion/B/browse/master/source/blender/bmesh/intern/bmesh_query.c$613
+# Takes an edge and a reference loop and returns a loop that is opposite of the starting edge, through a vertex.
+# The reference loop can be perpendicular to the edge's loop (prev or next loop)
+# Or in most cases it should also work if the reference loop is the same as the edge's loop.
 def BM_vert_step_fan_loop(edge, loop):
     if len(loop.vert.link_loops) != 4:
         print("Vert", loop.vert.index, "does not have 4 connected loops.")
@@ -1662,6 +1685,7 @@ def BM_vert_step_fan_loop(edge, loop):
         return None
 
 
+# https://developer.blender.org/diffusion/B/browse/master/source/blender/bmesh/intern/bmesh_query.c$572
 def BM_edge_other_loop(edge, loop):
     ### Pseudo-python. (there isn't an "edge.loop" in the bmesh python API so we'd need a bit more work but I'm skipping asserts for now)
     # if edge.loop and edge.loop.link_loop_radial_next != edge.loop:
@@ -1690,6 +1714,10 @@ def BM_edge_other_loop(edge, loop):
 
 
 # Loop extension converted from Blender's internal functions.
+# https://developer.blender.org/diffusion/B/browse/master/source/blender/bmesh/intern/bmesh_query.c$613
+# Takes a loop and a reference edge and returns a loop that is opposite of the starting loop, through a vertex.
+# The reference edge can be perpendicular to the loop's edge (prev or next loop)
+# Or in most cases it should also work if the reference edge is the same as the loop.edge
 def BM_vert_step_fan_loop_2(edge, loop, vert):
     if len(vert.link_loops) != 4:
         print("Vert", vert.index, "does not have 4 connected loops.")
@@ -1712,6 +1740,7 @@ def BM_vert_step_fan_loop_2(edge, loop, vert):
         return None
 
 
+# https://developer.blender.org/diffusion/B/browse/master/source/blender/bmesh/intern/bmesh_query.c$572
 def BM_edge_other_loop_2(e_prev, edge, loop):
     if loop.edge == edge:
         l_other = loop
@@ -1744,6 +1773,27 @@ def BM_edge_other_loop_2(e_prev, edge, loop):
     return l_other
 
 
+def fan_loop_extension(edge, loop, vert):
+    next_loop = BM_vert_step_fan_loop_2(edge, loop, vert)
+    if not next_loop:
+        loop = loop.link_loop_radial_next
+        next_loop = BM_vert_step_fan_loop_2(edge, loop, vert)
+    else:
+        return next_loop
+    # Can only return None if there's no next loop.
+    return None
+
+
+# Takes an edge + vert and returns the edge in the loop direction through the vert (assumes vert has 4 manifold edges)
+def get_opposite_edge(edge, vert):
+    edges = [e for e in vert.link_edges]
+    faces = [f for f in vert.link_faces]
+    a_face = [f for f in faces if edge in f.edges][0]
+    step_loop = [l for l in a_face.loops if l.edge in edges and l.edge != edge][0]
+    opposite_loop = fan_loop_extension(edge, step_loop, vert)
+    return opposite_loop.edge
+
+
 # ##################### Loopanar defs ##################### #
 
 def loop_extension(edge, vert):
@@ -1763,31 +1813,12 @@ def loop_extension(edge, vert):
         return
 
 
-def loop_end(edge):
-    # What's going on here?  This looks like it's assigning both vertices at once from the edge.verts
-    v1, v2 = edge.verts[:]
-    # And returns only one of them depending on the result from loop_extension?
-    # I guess if loop_extension returns true, don't return that one?
-    return not loop_extension(edge, v1) or not loop_extension(edge, v2)
-
 def ring_extension(loop):
     if len(loop.face.verts) == 4:
         return loop.link_loop_radial_next.link_loop_next.link_loop_next
     else:
         # Otherwise the face isn't a quad.. return nothing to partial_ring.
-        return
-
-# Possible improvements: If ring_end took a loop.. we could determine Border if loop.link_loop_radial_next == loop I think.
-# Or, we could knock out border and non_manifold by just checking if the loop.edge.is_manifold
-# But the way loopanar is structured we only have edges to work with here.  Otherwise we could loop.face and check the verts.
-# Which, itself, complicates whether we're measuring the next face or current face verts.
-def ring_end(edge):
-    faces = edge.link_faces[:]
-    border = len(faces) == 1  # If only one face is connected then this edge must be the border of the mesh.
-    non_manifold = len(faces) > 2  # In manifold geometry one edge can only be connected to two faces.
-    dead_ends = map(lambda x: len(x.verts) != 4, faces)
-    return border or non_manifold or any(dead_ends)
-
+        return None
 
 
 def register():
