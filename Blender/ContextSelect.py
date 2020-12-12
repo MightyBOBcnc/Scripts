@@ -20,7 +20,7 @@ bl_info = {
     "name": "Context Select Hybrid",
     "description": "Context-aware loop selection for vertices, edges, and faces.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (0, 2, 3),
+    "version": (0, 2, 4),
     "blender": (2, 80, 0),
     "location": "",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -125,12 +125,49 @@ classes = []
 mouse_keymap = []
 
 
+def cs_register_keymap_keys():
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name="Mesh", space_type='EMPTY')
+
+#        kmi = km.keymap_items.new("object.context_select", 'LEFTMOUSE', 'DOUBLE_CLICK', ctrl=True)
+#        kmi.properties.mode = 'SUB'
+#        mouse_keymap.append((km, kmi))
+
+        kmi = km.keymap_items.new("object.context_select", 'LEFTMOUSE', 'DOUBLE_CLICK', shift=True)
+        kmi.properties.mode = 'ADD'
+        mouse_keymap.append((km, kmi))
+
+        kmi = km.keymap_items.new("object.context_select", 'LEFTMOUSE', 'DOUBLE_CLICK')
+        kmi.properties.mode = 'SET'
+        mouse_keymap.append((km, kmi))
+
+
+def cs_unregister_keymap_keys():
+    for km, kmi in mouse_keymap:
+        km.keymap_items.remove(kmi)
+    mouse_keymap.clear()
+
+
+def cs_update_keymap_keys(self, context):
+    prefs = context.preferences.addons[__name__].preferences
+    
+    if prefs.add_keys_to_keymap:
+        cs_register_keymap_keys()
+    else:
+        cs_unregister_keymap_keys()
+
+
 class ContextSelectPreferences(bpy.types.AddonPreferences):
-    """
     # this must match the addon name, use '__package__'
     # when defining this in a submodule of a python package.
-    """
     bl_idname = __name__
+
+    add_keys_to_keymap: bpy.props.BoolProperty(
+        name="Add Keys to Key Map",
+        description="Automatically append the add-on's keys to Blender's key map.",
+        default=True,
+        update=cs_update_keymap_keys)
 
     select_linked_on_double_click: bpy.props.BoolProperty(
         name="Select Linked On Double Click",
@@ -177,6 +214,7 @@ class ContextSelectPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         layout = self.layout
+        layout.prop(self, "add_keys_to_keymap")
         layout.label(text="General Selection:")
         layout.prop(self, "select_linked_on_double_click")
         layout.prop(self, "terminate_self_intersects")
@@ -190,29 +228,6 @@ class ContextSelectPreferences(bpy.types.AddonPreferences):
         layout.label(text="Face Selection:")
         layout.prop(self, "allow_non_quads_at_ends")
 classes.append(ContextSelectPreferences)
-
-
-def register_keymap_keys():
-    kc = bpy.context.window_manager.keyconfigs.addon
-    if kc:
-        km = kc.keymaps.new(name="Mesh", space_type='EMPTY')
-
-#        kmi = km.keymap_items.new("object.context_select", 'LEFTMOUSE', 'DOUBLE_CLICK', ctrl=True)
-#        kmi.properties.mode = 'SUB'
-#        mouse_keymap.append((km, kmi))
-
-        kmi = km.keymap_items.new("object.context_select", 'LEFTMOUSE', 'DOUBLE_CLICK', shift=True)
-        kmi.properties.mode = 'ADD'
-        mouse_keymap.append((km, kmi))
-
-        kmi = km.keymap_items.new("object.context_select", 'LEFTMOUSE', 'DOUBLE_CLICK')
-        kmi.properties.mode = 'SET'
-        mouse_keymap.append((km, kmi))
-
-def unregister_keymap_keys():
-    for km, kmi in mouse_keymap:
-        km.keymap_items.remove(kmi)
-    mouse_keymap.clear()
 
 
 class ObjectMode:
@@ -905,8 +920,6 @@ def bounded_loop_vert_manifold(prefs, starting_vert, ends):
     connected_loops = []
     reference_list = set()
 
-    faces = [f for f in starting_vert.link_faces]
-
     for loop in candidate_dirs:
         if loop != "skip":
             if not prefs.ignore_hidden_geometry and loop.edge.hide:
@@ -1141,7 +1154,7 @@ def full_loop_vert_boundary(prefs, starting_vert):
     vert_list = set()
 
     for e in edges:
-        partial_list = partial_loop_vert_boundary(prefs, starting_vert, e)  # Swap the order of e and starting_vert
+        partial_list = partial_loop_vert_boundary(prefs, starting_vert, e)
         if "infinite" not in partial_list:
             vert_list.update(partial_list)
         else:
@@ -1842,18 +1855,18 @@ def BM_vert_step_fan_loop(edge, loop, vert):
     elif loop.link_loop_next.edge == e_prev:
         e_next = loop.edge
     else:
-        print("Unable to find a match.")
+        print("Context Select BM_vert_step_fan_loop: Unable to find a match.")
         return None
 
     if e_next.is_manifold:
-        return BM_edge_other_loop_2(e_prev, e_next, loop)
+        return BM_edge_other_loop(e_prev, e_next, loop)
     else:
-        print("Nonmanifold edge.")
+        print("Context Select BM_vert_step_fan_loop: Nonmanifold edge.")
         return None
 
 
 # https://developer.blender.org/diffusion/B/browse/master/source/blender/bmesh/intern/bmesh_query.c$572
-def BM_edge_other_loop_2(e_prev, edge, loop):
+def BM_edge_other_loop(e_prev, edge, loop):
     if loop.edge == edge:
         l_other = loop
     else:
@@ -1880,7 +1893,7 @@ def BM_edge_other_loop_2(e_prev, edge, loop):
             l_other = l_other.link_loop_next
 #            print("old logic b")
     else:
-        print("No match, got stuck!")
+        print("Context Select BM_edge_other_loop: No match, got stuck!")
         return None
     return l_other
 
@@ -1910,13 +1923,13 @@ def get_opposite_edge(edge, vert):
 def register():
     for every_class in classes:
         bpy.utils.register_class(every_class)
-    register_keymap_keys()
+    cs_register_keymap_keys()
 
 
 def unregister():
     for every_class in classes:
         bpy.utils.unregister_class(every_class)
-    unregister_keymap_keys()
+    cs_unregister_keymap_keys()
 
 
 if __name__ == "__main__":
