@@ -31,7 +31,7 @@ bl_info = {
     "wiki_url": "https://github.com/Stromberg90/Scripts/tree/master/Blender",
     "tracker_url": "https://github.com/Stromberg90/Scripts/issues",
     "blender": (2, 80, 0),
-    "version": (1, 1, 1)
+    "version": (1, 1, 2)
 }
 
 # ToDo:
@@ -149,32 +149,39 @@ class MergeTool(bpy.types.Operator):
                     else:
                         bpy.types.SpaceView3D.draw_handler_remove(
                             self._handle, 'WINDOW')
+                        print("Nope, cancelled.")  # Delete me later
                         return {'CANCELLED'}
                     self.started = True
             elif self.start_vertex is self.end_vertex:
                 bpy.types.SpaceView3D.draw_handler_remove(
                     self._handle, 'WINDOW')
                 context.workspace.status_text_set(None)
+                print("Cancelled for lack of anything to do.")  # Delete me later
                 return {'CANCELLED'}
             elif self.start_vertex is not None and self.end_vertex is not None:
                 self.start_vertex.select = True
                 self.end_vertex.select = True
                 try:
                     bpy.ops.mesh.merge(type='LAST')
-                    bpy.ops.ed.undo_push(
-                        message="Merge Tool undo step")
+#                    bpy.ops.ed.undo_push(
+#                        message="Merge Tool undo step")  # We may not even need the undo step if all we are doing is running a merge?  (Perhaps if the merge fails this is good to prevent undoing a step farther than the user wants?)
                 except TypeError:
                     pass
                 finally:
                     self.start_vertex = None
                     self.end_vertex = None
                     self.started = False
+                    bpy.types.SpaceView3D.draw_handler_remove(
+                    self._handle, 'WINDOW')
+                    context.workspace.status_text_set(None)
+                    return {'FINISHED'}  # We should probably return finished here.
             else:
                 bpy.types.SpaceView3D.draw_handler_remove(
                     self._handle, 'WINDOW')
                 context.workspace.status_text_set(None)
+                print("End of line; cancelled.")  # Delete me later
                 return {'CANCELLED'}
-            return {'RUNNING_MODAL'}
+#            return {'RUNNING_MODAL'}
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
             print("Cancelled")  # Delete me later
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')  # Probably comment this out as well?!  Somehow this needs to be removed when we leave the tool?  Or, rather maybe this should be removed automatically when "done" with a merge, or on pass_through?  ALSO at the moment no other keys work to exit the tool (not does the mouse).. so, like, there needs to be a 'if event is NOT in the events we care about and is not navigation, then pass through and return cancelled so we can switch to other tools?'
@@ -184,7 +191,9 @@ class MergeTool(bpy.types.Operator):
             return {'CANCELLED'}  # Basically the idea is that to keep the tool going we have to replace most if not all instances of returning cancelled with reseting start_vertex, end_vertex, self.started and returning 'running modal' again.
             # In other words, "cancelling" is really just resetting to the starting state so there isn't an active vert and active drawing a red vert and red line so we can start over with a different selection.
 
-        return {'RUNNING_MODAL'}
+        # I wonder if the undo system would break horribly if I allowed an "elif event.ctrl and event.type == 'Z':" to PASS_THROUGH here while the modal is running.  I imagine it would break horribly.
+
+        return {'RUNNING_MODAL'}  # Modals block the entire bloody UI, not just the viewport.  I don't know if there is any good way to get around that other than letting the modal finish instead.
 
     def invoke(self, context, event):
         if context.space_data.type == 'VIEW_3D':
@@ -194,6 +203,9 @@ class MergeTool(bpy.types.Operator):
             self.start_vertex = None
             self.end_vertex = None
             self.started = False
+
+            main(self, context, event)  # Delete me later if this doesn't work?  This goes up here or else there will be a hard crash; probably one of the "gotchas" related to memory pointers.
+
             self.me = bpy.context.object.data
             self.world_matrix = bpy.context.object.matrix_world
             self.bm = bmesh.from_edit_mesh(self.me)
@@ -204,6 +216,25 @@ class MergeTool(bpy.types.Operator):
 
             context.window_manager.modal_handler_add(self)
 #            main(self, context, event)  # Delete me later if this doesn't work?
+            if not self.started:
+#            if not self.started and event.value == 'PRESS':
+                if context.object.data.total_vert_sel == 1:  # Consider trying to make this work with the selection history instead of iterating over every vertex in the bmesh
+                    selected_vertex = None
+                    for v in self.bm.verts:
+                        if v.select:
+                            selected_vertex = v
+                            break
+
+                    if selected_vertex:
+                        self.start_vertex = selected_vertex
+                        self.start_vertex_transformed = self.world_matrix @ self.start_vertex.co
+                    else:
+                        bpy.types.SpaceView3D.draw_handler_remove(
+                            self._handle, 'WINDOW')
+                        print("Nope, cancelled.")  # Delete me later
+                        return {'CANCELLED'}
+                    self.started = True
+
 
             print("Invoke called, it wants its joke back")
             return {'RUNNING_MODAL'}
