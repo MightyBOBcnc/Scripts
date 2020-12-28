@@ -16,32 +16,34 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+bl_info = {
+    "name": "Merge Tool",
+    "description": "An interactive tool for merging vertices.",
+    "author": "Andreas Strømberg, Chris Kohl",
+    "version": (1, 1, 3),
+    "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
+    "location": "View3D > TOOLS > Merge Tool",
+    "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
+    "wiki_url": "https://github.com/MightyBOBcnc/Scripts/tree/Loopanar-Hybrid/Blender",
+    "tracker_url": "https://github.com/MightyBOBcnc/Scripts/issues",
+    "category": "Mesh"
+}
+
 import bpy
 import bgl
 import gpu
 import bmesh
 import math
 import os
+from gpu_extras.presets import draw_circle_2d
 from gpu_extras.batch import batch_for_shader
-
-bl_info = {
-    "name": "Merge Tool",
-    "category": "Mesh",
-    "author": "Andreas Strømberg, Chris Kohl",
-    "wiki_url": "https://github.com/Stromberg90/Scripts/tree/master/Blender",
-    "tracker_url": "https://github.com/Stromberg90/Scripts/issues",
-    "blender": (2, 80, 0),
-    "version": (1, 1, 2)
-}
-
-# ToDo:
-# Is there a way to get the previous active tool so we can potentially restore it when we cancel or are done?  That is something that *might* be needed?
 
 icon_dir = os.path.join(os.path.dirname(__file__), "icons")
 
-def draw_callback_px(self, context):
+def draw_callback_3d(self, context):
     if self.started and self.start_vertex is not None and self.end_vertex is not None:
         bgl.glEnable(bgl.GL_BLEND)
+
         coords = [self.start_vertex_transformed, self.end_vertex_transformed]
         shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
         batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
@@ -59,28 +61,40 @@ def draw_callback_px(self, context):
         bgl.glDisable(bgl.GL_BLEND)
 
 
+def draw_callback_2d(self, context):
+    bgl.glEnable(bgl.GL_BLEND)
+
+    circ_loc = self.m_coord
+    circ_color = (1, 1, 1, 1)
+    circ_radius = 12
+    circ_segments = 8 + 1
+    draw_circle_2d(self.m_coord, circ_color, circ_radius, circ_segments)
+
+    bgl.glLineWidth(1)
+    bgl.glDisable(bgl.GL_BLEND)
+
+
 def main(self, context, event):
     """Run this function on left mouse, execute the ray cast"""
-    coord = event.mouse_region_x, event.mouse_region_y
+    self.m_coord = event.mouse_region_x, event.mouse_region_y
 
     if self.started:
-        result = bpy.ops.view3d.select(extend=True, location=coord)
+        result = bpy.ops.view3d.select(extend=True, location=self.m_coord)
     else:
-        result = bpy.ops.view3d.select(extend=False, location=coord)
+        result = bpy.ops.view3d.select(extend=False, location=self.m_coord)
 
     print("Result is:", result)  # Delete me later
     if result == {'PASS_THROUGH'}:
         bpy.ops.mesh.select_all(action='DESELECT')
-#    if 'FINISHED' in result:
+#    if 'FINISHED' not in result:
 #        print("Butt")
-#        self.started = True
 
 
 class MergeTool(bpy.types.Operator):
     """Modal object selection with a ray cast"""
     bl_idname = "mesh.merge_tool"
     bl_label = "Merge Tool"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER', 'UNDO'}  # We probably don't need the REGISTER.
 
     merge_mode: bpy.props.EnumProperty(
         name="Mode",
@@ -94,33 +108,36 @@ class MergeTool(bpy.types.Operator):
     merge_location: bpy.props.EnumProperty(
         name="Location",
         description="Merge location",
-        items=[('TARGET', "Target", "Components will be merged at the target's location", 'LOC_TARGET', 1),
-               ('CENTER', "Center", "Components will be merged at the averaged center between the two", 'LOC_CENTER', 2)
+        items=[('LAST', "Last", "Components will be merged at the target's location", 1),
+               ('CENTER', "Center", "Components will be merged at the averaged center between the two", 2)
                ],
-        default='TARGET'
+        default='LAST'
     )
 
     def __init__(self):
-        print("This happens first")  # Delete me later
+        print("========This happens first========")  # Delete me later
         self.start_vertex = None
         self.end_vertex = None
         self.started = False
-        self._handle = None
+        self._handle3d = None
+        self._handle2d = None
+
+
+    def remove_handles(self, context):
+        bpy.types.SpaceView3D.draw_handler_remove(self._handle3d, 'WINDOW')
+        bpy.types.SpaceView3D.draw_handler_remove(self._handle2d, 'WINDOW')
+
 
     def modal(self, context, event):
         context.area.tag_redraw()
-        
-#        self.started = True  # Delete me later if this doesn't work?
-#        main(context, event, self.started)  # Delete me later if this doesn't work?
 
-#        if event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
         if event.alt or event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
             # allow navigation (event.alt allows for using Industry Compatible keymap navigation)
             return {'PASS_THROUGH'}
         elif event.type == 'MOUSEMOVE':
             if self.started:
-                coord = event.mouse_region_x, event.mouse_region_y
-                bpy.ops.view3d.select(extend=False, location=coord)
+                self.m_coord = event.mouse_region_x, event.mouse_region_y
+                bpy.ops.view3d.select(extend=False, location=self.m_coord)
                 print("Running view3d.select")  # Delete me later (this runs A LOT)
 
                 selected_vertex = None
@@ -135,10 +152,9 @@ class MergeTool(bpy.types.Operator):
         elif event.type == 'LEFTMOUSE':
             main(self, context, event)
             if not self.started:
-#            if not self.started and event.value == 'PRESS':
-                if context.object.data.total_vert_sel == 1:  # Consider trying to make this work with the selection history instead of iterating over every vertex in the bmesh
+                if context.object.data.total_vert_sel == 1:
                     selected_vertex = None
-                    for v in self.bm.verts:
+                    for v in self.bm.verts:  # Consider trying to make this work with the selection history instead of iterating over every vertex in the bmesh
                         if v.select:
                             selected_vertex = v
                             break
@@ -147,14 +163,13 @@ class MergeTool(bpy.types.Operator):
                         self.start_vertex = selected_vertex
                         self.start_vertex_transformed = self.world_matrix @ self.start_vertex.co
                     else:
-                        bpy.types.SpaceView3D.draw_handler_remove(
-                            self._handle, 'WINDOW')
+                        self.remove_handles(context)
                         print("Nope, cancelled.")  # Delete me later
                         return {'CANCELLED'}
                     self.started = True
+                    print("We're in here and are started.")
             elif self.start_vertex is self.end_vertex:
-                bpy.types.SpaceView3D.draw_handler_remove(
-                    self._handle, 'WINDOW')
+                self.remove_handles(context)
                 context.workspace.status_text_set(None)
                 print("Cancelled for lack of anything to do.")  # Delete me later
                 return {'CANCELLED'}
@@ -162,40 +177,39 @@ class MergeTool(bpy.types.Operator):
                 self.start_vertex.select = True
                 self.end_vertex.select = True
                 try:
-                    bpy.ops.mesh.merge(type='LAST')
+                    bpy.ops.mesh.merge(type=self.merge_location)
 #                    bpy.ops.ed.undo_push(
 #                        message="Merge Tool undo step")  # We may not even need the undo step if all we are doing is running a merge?  (Perhaps if the merge fails this is good to prevent undoing a step farther than the user wants?)
                 except TypeError:
+                    print("That failed for some reason.")
                     pass
                 finally:
                     self.start_vertex = None
                     self.end_vertex = None
                     self.started = False
-                    bpy.types.SpaceView3D.draw_handler_remove(
-                    self._handle, 'WINDOW')
+                    self.remove_handles(context)
                     context.workspace.status_text_set(None)
-                    return {'FINISHED'}  # We should probably return finished here.
+                    return {'FINISHED'}
             else:
-                bpy.types.SpaceView3D.draw_handler_remove(
-                    self._handle, 'WINDOW')
+                self.remove_handles(context)
                 context.workspace.status_text_set(None)
                 print("End of line; cancelled.")  # Delete me later
                 return {'CANCELLED'}
-#            return {'RUNNING_MODAL'}
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
             print("Cancelled")  # Delete me later
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')  # Probably comment this out as well?!  Somehow this needs to be removed when we leave the tool?  Or, rather maybe this should be removed automatically when "done" with a merge, or on pass_through?  ALSO at the moment no other keys work to exit the tool (not does the mouse).. so, like, there needs to be a 'if event is NOT in the events we care about and is not navigation, then pass through and return cancelled so we can switch to other tools?'
-            context.workspace.status_text_set(None)  # Comment this out when we fix the tool to never be 'inactive'
-#            self.start_vertex = None  # Uncomment me
-#            self.end_vertex = None  # Uncomment me
-            return {'CANCELLED'}  # Basically the idea is that to keep the tool going we have to replace most if not all instances of returning cancelled with reseting start_vertex, end_vertex, self.started and returning 'running modal' again.
-            # In other words, "cancelling" is really just resetting to the starting state so there isn't an active vert and active drawing a red vert and red line so we can start over with a different selection.
+            self.remove_handles(context)
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
 
-        # I wonder if the undo system would break horribly if I allowed an "elif event.ctrl and event.type == 'Z':" to PASS_THROUGH here while the modal is running.  I imagine it would break horribly.
-
-        return {'RUNNING_MODAL'}  # Modals block the entire bloody UI, not just the viewport.  I don't know if there is any good way to get around that other than letting the modal finish instead.
+        return {'RUNNING_MODAL'}
 
     def invoke(self, context, event):
+        # Checks if we are in face selection mode.
+        if context.tool_settings.mesh_select_mode[2]:
+            return {'CANCELLED'}
+        # Checks if we are in edge selection mode.
+        if context.tool_settings.mesh_select_mode[1]:
+            return {'CANCELLED'}
         if context.space_data.type == 'VIEW_3D':
             context.workspace.status_text_set(
                 "Left click and drag to merge vertices, Esc or right click to cancel")
@@ -204,23 +218,26 @@ class MergeTool(bpy.types.Operator):
             self.end_vertex = None
             self.started = False
 
-            main(self, context, event)  # Delete me later if this doesn't work?  This goes up here or else there will be a hard crash; probably one of the "gotchas" related to memory pointers.
+            main(self, context, event)  #This goes up here or else there will be a hard crash; probably one of the "gotchas" related to memory pointers.
 
+            if context.object.data.total_vert_sel == 0:
+                context.workspace.status_text_set(None)
+                print("Pls no break.")  # Delete me later
+                return {'CANCELLED'}
+            
             self.me = bpy.context.object.data
             self.world_matrix = bpy.context.object.matrix_world
             self.bm = bmesh.from_edit_mesh(self.me)
 
             args = (self, context)
-            self._handle = bpy.types.SpaceView3D.draw_handler_add(
-                draw_callback_px, args, 'WINDOW', 'POST_VIEW')
+            self._handle3d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_3d, args, 'WINDOW', 'POST_VIEW')
+            self._handle2d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_2d, args, 'WINDOW', 'POST_PIXEL')
 
             context.window_manager.modal_handler_add(self)
-#            main(self, context, event)  # Delete me later if this doesn't work?
             if not self.started:
-#            if not self.started and event.value == 'PRESS':
-                if context.object.data.total_vert_sel == 1:  # Consider trying to make this work with the selection history instead of iterating over every vertex in the bmesh
+                if context.object.data.total_vert_sel == 1:
                     selected_vertex = None
-                    for v in self.bm.verts:
+                    for v in self.bm.verts:  # Consider trying to make this work with the selection history instead of iterating over every vertex in the bmesh
                         if v.select:
                             selected_vertex = v
                             break
@@ -229,8 +246,7 @@ class MergeTool(bpy.types.Operator):
                         self.start_vertex = selected_vertex
                         self.start_vertex_transformed = self.world_matrix @ self.start_vertex.co
                     else:
-                        bpy.types.SpaceView3D.draw_handler_remove(
-                            self._handle, 'WINDOW')
+                        self.remove_handles(context)
                         print("Nope, cancelled.")  # Delete me later
                         return {'CANCELLED'}
                     self.started = True
@@ -251,8 +267,8 @@ class ToolMergeTool(bpy.types.WorkSpaceTool):
     bl_label = "Merge Tool"
     bl_description = "Interactively merge vertices with the Merge Tool"
     bl_icon = os.path.join(icon_dir, "ops.mesh.merge_tool")
+    bl_cursor = 'PAINT_CROSS'
     bl_widget = None
-#    bl_operator = "mesh.merge_tool('INVOKE_DEFAULT')"
     bl_keymap = (
         ("mesh.merge_tool", {"type": 'LEFTMOUSE', "value": 'PRESS'},
          {"properties": []}),
@@ -263,7 +279,7 @@ class ToolMergeTool(bpy.types.WorkSpaceTool):
 
         row = layout.row()
         row.use_property_split = False
-        row.prop(tool_props, "merge_mode", text="Mode")
+#        row.prop(tool_props, "merge_mode", text="Mode")
         row.prop(tool_props, "merge_location", text="Location")
 
 
