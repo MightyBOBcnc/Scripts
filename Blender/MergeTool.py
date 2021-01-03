@@ -20,7 +20,7 @@ bl_info = {
     "name": "Merge Tool",
     "description": "An interactive tool for merging vertices.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (1, 1, 4),
+    "version": (1, 1, 5),
     "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
     "location": "View3D > TOOLS > Merge Tool",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -41,11 +41,11 @@ icon_dir = os.path.join(os.path.dirname(__file__), "icons")
 
 def draw_callback_3d(self, context):
     if self.started:
-        if self.start_vertex is not None and self.end_vertex is not None:
+        if self.start_comp is not None and self.end_comp is not None:
             bgl.glEnable(bgl.GL_BLEND)
             bgl.glLineWidth(self.line_width1)
             bgl.glPointSize(self.point_size)
-            coords = [self.start_vertex_transformed, self.end_vertex_transformed]
+            coords = [self.start_comp_transformed, self.end_comp_transformed]
 
             # Line that connects the start and end position (draw first so it's beneath the vertices)
             shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
@@ -55,9 +55,9 @@ def draw_callback_3d(self, context):
             batch.draw(shader)
 
             # Ending point
-            if self.end_vertex != self.start_vertex:
+            if self.end_comp != self.start_comp:
                 shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-                batch = batch_for_shader(shader, 'POINTS', {"pos": [self.end_vertex_transformed]})
+                batch = batch_for_shader(shader, 'POINTS', {"pos": [self.end_comp_transformed]})
                 shader.bind()
                 shader.uniform_float("color", self.end_color)
                 batch.draw(shader)
@@ -67,12 +67,12 @@ def draw_callback_3d(self, context):
             bgl.glDisable(bgl.GL_BLEND)
 
         # Starting point
-        if self.start_vertex is not None:
+        if self.start_comp is not None:
             bgl.glEnable(bgl.GL_BLEND)
             bgl.glPointSize(self.point_size)
 
             shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-            batch = batch_for_shader(shader, 'POINTS', {"pos": [self.start_vertex_transformed]})
+            batch = batch_for_shader(shader, 'POINTS', {"pos": [self.start_comp_transformed]})
             shader.bind()
             shader.uniform_float("color", self.start_color)
             batch.draw(shader)
@@ -146,8 +146,8 @@ class MergeTool(bpy.types.Operator):
         self.vert_mode = None
         self.edge_mode = None
         self.face_mode = None
-        self.start_vertex = None
-        self.end_vertex = None
+        self.start_comp = None
+        self.end_comp = None
         self.started = False
         self._handle3d = None
         self._handle2d = None
@@ -181,71 +181,93 @@ class MergeTool(bpy.types.Operator):
                 bpy.ops.view3d.select(extend=False, location=self.m_coord)
                 print("Running view3d.select")  # Delete me later (this runs A LOT)
 
-                selected_vertex = None
-                selected_vertex = self.bm.select_history.active
+                selected_comp = None
+                selected_comp = self.bm.select_history.active
 
-                if selected_vertex:
-                    self.end_vertex = selected_vertex
+                if selected_comp:
+                    self.end_comp = selected_comp  # Set the end component
                     if self.vert_mode:
-                        self.end_vertex_transformed = self.world_matrix @ self.end_vertex.co
+                        self.end_comp_transformed = self.world_matrix @ self.end_comp.co
                     elif self.edge_mode:
-                        self.end_vertex_transformed = self.world_matrix @ find_center(self.end_vertex)
-                        self.e1 = selected_vertex
+                        self.end_comp_transformed = self.world_matrix @ find_center(self.end_comp)
+                        self.e1 = selected_comp
         elif event.type == 'LEFTMOUSE':
             main(self, context, event)
             if not self.started:
                 if context.object.data.total_vert_sel == 1:
-                    selected_vertex = None
-                    selected_vertex = self.bm.select_history.active
+                    selected_comp = None
+                    selected_comp = self.bm.select_history.active
 
-                    if selected_vertex:
-                        self.start_vertex = selected_vertex
+                    if selected_comp:
+                        self.start_comp = selected_comp  # Set the start component
                         if self.vert_mode:
-                            self.start_vertex_transformed = self.world_matrix @ self.start_vertex.co  # Edge mode is going to need 6 transformed points to draw; the verts and center of each edge.  I feel that transformation should happen outside of the actual draw handlers?
+                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co  # Edge mode is going to need 6 transformed points to draw; the verts and center of each edge.  I feel that transformation should happen outside of the actual draw handlers?
                         elif self.edge_mode:
-                            self.start_vertex_transformed = self.world_matrix @ find_center(self.start_vertex)
-                            self.e0 = selected_vertex
+                            self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
+                            self.e0 = selected_comp
                     else:
                         self.remove_handles(context)
                         print("Nope, cancelled.")  # Delete me later
                         return {'CANCELLED'}
                     self.started = True
                     print("We're in here and are started.")
-            elif self.start_vertex is self.end_vertex:
+            elif self.start_comp is self.end_comp:
                 self.remove_handles(context)
                 context.workspace.status_text_set(None)
                 print("Cancelled for lack of anything to do.")  # Delete me later
                 return {'CANCELLED'}
-            elif self.start_vertex is not None and self.end_vertex is not None:
-                self.start_vertex.select = True
-                self.end_vertex.select = True
-                self.bm.select_history.clear()  # Ensure history has proper component order for merge location
-                self.bm.select_history.add(self.start_vertex)
-                self.bm.select_history.add(self.end_vertex)
+            elif self.start_comp is not None and self.end_comp is not None:
+                bpy.ops.mesh.select_all(action='DESELECT')  # Clear selection
+                self.bm.select_history.clear()  # Purge selection history so we can manually control it
+
                 try:
                     if self.vert_mode:
+                        self.start_comp.select = True
+                        self.end_comp.select = True
+                        self.bm.select_history.add(self.start_comp)
+                        self.bm.select_history.add(self.end_comp)
                         bpy.ops.mesh.merge(type=self.merge_location)
                     elif self.edge_mode:
-                        if not any([v for v in self.start_vertex.verts if v in self.end_vertex.verts]):
-                            bpy.ops.mesh.bridge_edge_loops(use_merge=True, merge_factor=self.factor)  # SO IT TURNS OUT THAT THIS OPERATOR DOESN'T KNOW WHICH EDGE IS ACTIVE AND WHICH IS NOT BECAUSE THE EDGE THAT IS FACTOR 0.0 AND THE ONE THAT IS 1.0 IS 100% RANDOM CHANCE
-                        else:
-                            bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'VERT'})
+                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'VERT'})
+                        # Separate edges
+                        if not any([v for v in self.start_comp.verts if v in self.end_comp.verts]):
+                            bridge = bmesh.ops.bridge_loops(self.bm, edges=(self.start_comp, self.end_comp))
+                            new_e0 = bridge['edges'][0]
+                            new_e1 = bridge['edges'][1]
+                            sv0 = [v for v in new_e0.verts if v in self.start_comp.verts][0]
+                            sv1 = [v for v in new_e1.verts if v in self.start_comp.verts][0]
+                            ev0 = new_e0.other_vert(sv0)
+                            ev1 = new_e1.other_vert(sv1)
 
-                            shared_vert = [v for v in self.start_vertex.verts if v in self.end_vertex.verts][0]
+                            merge_map = {}
+                            merge_map[sv0] = ev0
+                            merge_map[sv1] = ev1
+                            # bmesh weld_verts always moves verts to target so we must manually set desired vert.co
+                            if self.merge_location == 'FIRST':
+                                ev0.co = sv0.co
+                                ev1.co = sv1.co
+                            elif self.merge_location == 'CENTER':
+                                ev0.co = find_center(new_e0)
+                                ev1.co = find_center(new_e1)
+                            elif self.merge_location == 'LAST':
+                                sv0.co = ev0.co
+                                sv1.co = ev1.co
+                            bmesh.ops.weld_verts(self.bm, targetmap=merge_map)
+                            bmesh.update_edit_mesh(self.me)
+                        # Edges share a vertex
+                        else:
+                            shared_vert = [v for v in self.start_comp.verts if v in self.end_comp.verts][0]
                             print("shared index:", shared_vert.index)
-                            self.start_vertex.select = False
-                            self.end_vertex.select = False
-                            self.bm.select_history.clear()  # Ensure history has proper component order for merge location
-                            for v in self.start_vertex.verts:
+                            for v in self.start_comp.verts:
                                 if v is not shared_vert:
                                     v.select = True
                                     self.bm.select_history.add(v)
-                            for v in self.end_vertex.verts:
+                            for v in self.end_comp.verts:
                                 if v is not shared_vert:
                                     v.select = True
                                     self.bm.select_history.add(v)
                             bpy.ops.mesh.merge(type=self.merge_location)
-                            bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'EDGE'})
+                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'EDGE'})
 
 #                    bpy.ops.ed.undo_push(
 #                        message="Merge Tool undo step")  # We may not even need the undo step if all we are doing is running a merge?  (Perhaps if the merge fails this is good to prevent undoing a step farther than the user wants?)
@@ -254,8 +276,8 @@ class MergeTool(bpy.types.Operator):
                     return {'CANCELLED'}
                 finally:
                     bpy.ops.mesh.select_all(action='DESELECT')
-                    self.start_vertex = None
-                    self.end_vertex = None
+                    self.start_comp = None
+                    self.end_comp = None
                     if self.edge_mode:
                         self.e0 = None
                         self.e1 = None
@@ -287,18 +309,14 @@ class MergeTool(bpy.types.Operator):
         if self.face_mode:
             self.report({'WARNING'}, "Merge Tool does not work with Face selection mode")
             return {'CANCELLED'}
-        # Checks if we are in edge selection mode.
-#        if self.edge_mode:
-#            self.report({'WARNING'}, "Edge merging support coming soon")
-#            return {'CANCELLED'}
         if context.tool_settings.mesh_select_mode[0] and context.tool_settings.mesh_select_mode[1]:
             self.report({'WARNING'}, "Selection Mode must be Vertex OR Edge, not both at the same time")
             return {'CANCELLED'}
         if context.space_data.type == 'VIEW_3D':
             context.workspace.status_text_set("Left click and drag to merge vertices, Esc or right click to cancel")
 
-            self.start_vertex = None
-            self.end_vertex = None
+            self.start_comp = None
+            self.end_comp = None
             self.started = False
 
             if self.edge_mode:
@@ -330,16 +348,16 @@ class MergeTool(bpy.types.Operator):
             if not self.started:
                 if (self.vert_mode and context.object.data.total_vert_sel == 1) or \
                    (self.edge_mode and context.object.data.total_edge_sel == 1):
-                    selected_vertex = None
-                    selected_vertex = self.bm.select_history.active
+                    selected_comp = None
+                    selected_comp = self.bm.select_history.active
 
-                    if selected_vertex:
-                        self.start_vertex = selected_vertex
+                    if selected_comp:
+                        self.start_comp = selected_comp  # Set the start component
                         if self.vert_mode:
-                            self.start_vertex_transformed = self.world_matrix @ self.start_vertex.co  # Edge mode is going to need 6 transformed points to draw; the verts and center of each edge.  I feel that transformation should happen outside of the actual draw handlers?
+                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co  # Edge mode is going to need 6 transformed points to draw; the verts and center of each edge.  I feel that transformation should happen outside of the actual draw handlers?
                         elif self.edge_mode:
-                            self.start_vertex_transformed = self.world_matrix @ find_center(self.start_vertex)
-                            self.e0 = selected_vertex
+                            self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
+                            self.e0 = selected_comp
                     else:
                         self.remove_handles(context)
                         print("Nope, cancelled.")  # Delete me later
