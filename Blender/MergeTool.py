@@ -20,7 +20,7 @@ bl_info = {
     "name": "Merge Tool",
     "description": "An interactive tool for merging vertices.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (1, 1, 5),
+    "version": (1, 1, 6),
     "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
     "location": "View3D > TOOLS > Merge Tool",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -36,22 +36,122 @@ import bmesh
 import os
 from gpu_extras.presets import draw_circle_2d
 from gpu_extras.batch import batch_for_shader
+from bpy.props import (
+    EnumProperty,
+    StringProperty,
+    BoolProperty,
+    IntProperty,
+    FloatVectorProperty,
+    FloatProperty,
+    )
 
 icon_dir = os.path.join(os.path.dirname(__file__), "icons")
+
+classes = []
+
+class MergeToolPreferences(bpy.types.AddonPreferences):
+    # this must match the addon __name__
+    # use '__package__' when defining this in a submodule of a python package.
+    bl_idname = __name__
+
+    show_circ: BoolProperty(name="Show Circle",
+        description="Show the circle cursor",
+        default=True)
+
+    point_size: FloatProperty(name="Point Size",
+        description="Size of highlighted vertices",
+        default=6.0,
+        min=3.0,
+        max=10.0,
+        step=1,
+        precision=2)
+
+    edge_width: FloatProperty(name="Edge Width",
+        description="Width of highlighted edges",
+        default=2.5,
+        min=1.0,
+        max=10.0,
+        step=1,
+        precision=2)
+
+    line_width: FloatProperty(name="Line Width",
+        description="Width of the connecting line",
+        default=2.0,
+        min=1.0,
+        max=10.0,
+        step=1,
+        precision=2)
+
+    circ_radius: FloatProperty(name="Circle Size",
+        description="Size of the circle cursor (VISUAL ONLY)",
+        default=12.0,
+        min=6.0,
+        max=100,
+        step=1,
+        precision=2)
+
+    start_color: FloatVectorProperty(name="Starting Color",
+        default=(0.6, 0.0, 1.0, 1.0),
+        size=4,
+        subtype="COLOR",
+        min=0,
+        max=1)
+
+    end_color: FloatVectorProperty(name="Ending Color",
+        default=(0.2, 1.0, 0.3, 1.0),
+        size=4,
+        subtype="COLOR",
+        min=0,
+        max=1)
+
+    line_color: FloatVectorProperty(name="Line Color",
+        default=(1.0, 0.0, 0.0, 1.0),
+        size=4,
+        subtype="COLOR",
+        min=0,
+        max=1)
+
+    circ_color: FloatVectorProperty(name="Circle Color",
+        default=(1.0, 1.0, 1.0, 1.0),
+        size=4,
+        subtype="COLOR",
+        min=0,
+        max=1)
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.prop(self, "show_circ")
+
+        layout.use_property_split = True
+        nums = layout.grid_flow(row_major=False, columns=0, even_columns=True, even_rows=False, align=False)
+
+        nums.prop(self, "point_size")
+        nums.prop(self, "edge_width")
+        nums.prop(self, "line_width")
+#        nums.prop(self, "circ_radius")
+
+        colors = layout.grid_flow(row_major=False, columns=0, even_columns=True, even_rows=False, align=False)
+        colors.prop(self, "start_color")
+        colors.prop(self, "end_color")
+        colors.prop(self, "line_color")
+        colors.prop(self, "circ_color")
+classes.append(MergeToolPreferences)
+
 
 def draw_callback_3d(self, context):
     if self.started:
         if self.start_comp is not None and self.end_comp is not None:
             bgl.glEnable(bgl.GL_BLEND)
-            bgl.glLineWidth(self.line_width1)
-            bgl.glPointSize(self.point_size)
+            bgl.glLineWidth(self.prefs.line_width)
+            bgl.glPointSize(self.prefs.point_size)
             coords = [self.start_comp_transformed, self.end_comp_transformed]
 
             # Line that connects the start and end position (draw first so it's beneath the vertices)
             shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
+            batch = batch_for_shader(shader, 'LINES', {"pos": coords})
             shader.bind()
-            shader.uniform_float("color", self.line_color)
+            shader.uniform_float("color", self.prefs.line_color)
             batch.draw(shader)
 
             # Ending point
@@ -59,7 +159,7 @@ def draw_callback_3d(self, context):
                 shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
                 batch = batch_for_shader(shader, 'POINTS', {"pos": [self.end_comp_transformed]})
                 shader.bind()
-                shader.uniform_float("color", self.end_color)
+                shader.uniform_float("color", self.prefs.end_color)
                 batch.draw(shader)
 
             bgl.glLineWidth(1)
@@ -69,12 +169,12 @@ def draw_callback_3d(self, context):
         # Starting point
         if self.start_comp is not None:
             bgl.glEnable(bgl.GL_BLEND)
-            bgl.glPointSize(self.point_size)
+            bgl.glPointSize(self.prefs.point_size)
 
             shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
             batch = batch_for_shader(shader, 'POINTS', {"pos": [self.start_comp_transformed]})
             shader.bind()
-            shader.uniform_float("color", self.start_color)
+            shader.uniform_float("color", self.prefs.start_color)
             batch.draw(shader)
 
 #            bgl.glLineWidth(1)
@@ -85,10 +185,8 @@ def draw_callback_3d(self, context):
 def draw_callback_2d(self, context):
     bgl.glEnable(bgl.GL_BLEND)
 
-    circ_color = (1, 1, 1, 1)  # Abstract this into an add-on preference later
-    circ_radius = 12  # Abstract this into an add-on preference later
-    circ_segments = 8 + 1
-    draw_circle_2d(self.m_coord, circ_color, circ_radius, circ_segments)
+    circ_segments = 8 + 1  # Have to add 1 for some reason in order to get proper number of segments. This could potentially also be a ratio with the radius.
+    draw_circle_2d(self.m_coord, self.prefs.circ_color, self.prefs.circ_radius, circ_segments)
 
 #    bgl.glLineWidth(1)
     bgl.glDisable(bgl.GL_BLEND)
@@ -98,7 +196,7 @@ def find_center(source):
     """Assumes that the input is an Edge or an ordered object holding 2 vertices"""
     if type(source) == bmesh.types.BMEdge:
         v0 = source.verts[0]
-        v1 = source.verts[1]        
+        v1 = source.verts[1]
     elif len(source) != 2:
         print("find_center accepts a BMEdge or an ordered BMElemSeq, List, or Tuple of vertices.")
     else:
@@ -120,6 +218,7 @@ def main(self, context, event):
     print("Result is:", result)  # Delete me later
     if result == {'PASS_THROUGH'}:
         bpy.ops.mesh.select_all(action='DESELECT')
+        print("Yas queen")
 #    if 'FINISHED' not in result:
 #        print("Butt")
 
@@ -142,6 +241,7 @@ class MergeTool(bpy.types.Operator):
 
     def __init__(self):
         print("========This happens first========")  # Delete me later
+        self.prefs = bpy.context.preferences.addons[__name__].preferences
         self.m_coord = None
         self.vert_mode = None
         self.edge_mode = None
@@ -151,13 +251,6 @@ class MergeTool(bpy.types.Operator):
         self.started = False
         self._handle3d = None
         self._handle2d = None
-        self.factor = None
-        self.start_color = (0.6, 0, 1, 1)
-        self.end_color = (0.2, 1, 0.3, 1)
-        self.line_color = (1, 0, 0, 1)
-        self.line_width1 = 2.0
-        self.line_width2 = 2.5
-        self.point_size = 6.0
 
 
     def remove_handles(self, context):
@@ -177,12 +270,21 @@ class MergeTool(bpy.types.Operator):
             return {'PASS_THROUGH'}
         elif event.type == 'MOUSEMOVE':
             if self.started:
+#                self.bm.select_history.clear()
+#                bpy.ops.mesh.select_all(action='DESELECT')  # ANY PERFORMANCE HIT FOR THIS?
                 self.m_coord = event.mouse_region_x, event.mouse_region_y
                 bpy.ops.view3d.select(extend=False, location=self.m_coord)
                 print("Running view3d.select")  # Delete me later (this runs A LOT)
 
+#                if result == {'PASS_THROUGH'}:
+#                    bpy.ops.mesh.select_all(action='DESELECT')
+#                    self.end_comp = None
+#                    self.end_comp_transformed = None
+#                    print("debug")
+
                 selected_comp = None
                 selected_comp = self.bm.select_history.active
+#                print(selected_comp)
 
                 if selected_comp:
                     self.end_comp = selected_comp  # Set the end component
@@ -191,10 +293,14 @@ class MergeTool(bpy.types.Operator):
                     elif self.edge_mode:
                         self.end_comp_transformed = self.world_matrix @ find_center(self.end_comp)
                         self.e1 = selected_comp
+#                else:  # Future improvement: If we replace the use of view3d.select with actual raycasting we can detect if the ray has no hits (is empty space) and only then set end_comp back to None.
+#                    self.end_comp = None  # That way we can do no merge if we're off mesh, but if we're on mesh we won't get flickering if the cursor is on a big face not near an edge or vertex.
+#                    self.end_comp_transformed = None
         elif event.type == 'LEFTMOUSE':
             main(self, context, event)
             if not self.started:
-                if context.object.data.total_vert_sel == 1:
+                if (self.vert_mode and context.object.data.total_vert_sel == 1) or \
+                   (self.edge_mode and context.object.data.total_edge_sel == 1):
                     selected_comp = None
                     selected_comp = self.bm.select_history.active
 
@@ -219,7 +325,6 @@ class MergeTool(bpy.types.Operator):
             elif self.start_comp is not None and self.end_comp is not None:
                 bpy.ops.mesh.select_all(action='DESELECT')  # Clear selection
                 self.bm.select_history.clear()  # Purge selection history so we can manually control it
-
                 try:
                     if self.vert_mode:
                         self.start_comp.select = True
@@ -228,7 +333,7 @@ class MergeTool(bpy.types.Operator):
                         self.bm.select_history.add(self.end_comp)
                         bpy.ops.mesh.merge(type=self.merge_location)
                     elif self.edge_mode:
-                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'VERT'})
+                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'VERT'})  # THIS MAY NOT BE NECESSARY NOW THAT WE'RE DOING BMESH MERGING; TEST AND SEE. Note: would have to replace the bpy.ops.mesh.merge code for the "edges share a vertex" case.
                         # Separate edges
                         if not any([v for v in self.start_comp.verts if v in self.end_comp.verts]):
                             bridge = bmesh.ops.bridge_loops(self.bm, edges=(self.start_comp, self.end_comp))
@@ -267,7 +372,7 @@ class MergeTool(bpy.types.Operator):
                                     v.select = True
                                     self.bm.select_history.add(v)
                             bpy.ops.mesh.merge(type=self.merge_location)
-                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'EDGE'})
+                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'EDGE'})  # THIS MAY NOT BE NECESSARY NOW THAT WE'RE DOING BMESH MERGING; TEST AND SEE. Note: would have to replace the bpy.ops.mesh.merge code for the "edges share a vertex" case.
 
 #                    bpy.ops.ed.undo_push(
 #                        message="Merge Tool undo step")  # We may not even need the undo step if all we are doing is running a merge?  (Perhaps if the merge fails this is good to prevent undoing a step farther than the user wants?)
@@ -284,7 +389,7 @@ class MergeTool(bpy.types.Operator):
                     self.started = False
                     self.remove_handles(context)
                     context.workspace.status_text_set(None)
-                return {'FINISHED'}  # This perhaps should be un-indented by one indent due to a code style warning.
+                return {'FINISHED'}
             else:
                 self.remove_handles(context)
                 context.workspace.status_text_set(None)
@@ -319,14 +424,6 @@ class MergeTool(bpy.types.Operator):
             self.end_comp = None
             self.started = False
 
-            if self.edge_mode:
-                if self.merge_location == 'LAST':
-                    self.factor = 0.0
-                elif self.merge_location == 'CENTER':
-                    self.factor = 0.5
-                elif self.merge_location == 'FIRST':
-                    self.factor = 1.0
-
             main(self, context, event)  #This goes up here or else there will be a hard crash; probably one of the "gotchas" related to memory pointers.
 
             if self.vert_mode and context.object.data.total_vert_sel == 0:
@@ -342,7 +439,8 @@ class MergeTool(bpy.types.Operator):
 
             args = (self, context)
             self._handle3d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_3d, args, 'WINDOW', 'POST_VIEW')
-            self._handle2d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_2d, args, 'WINDOW', 'POST_PIXEL')  # For later: Add-on preference to enable or disable showing the circle.
+            if self.prefs.show_circ:
+                self._handle2d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_2d, args, 'WINDOW', 'POST_PIXEL')
 
             context.window_manager.modal_handler_add(self)
             if not self.started:
@@ -370,13 +468,14 @@ class MergeTool(bpy.types.Operator):
         else:
             self.report({'WARNING'}, "Active space must be a View3d")
             return {'CANCELLED'}
+classes.append(MergeTool)
 
 
-class ToolMergeTool(bpy.types.WorkSpaceTool):
+class WorkSpaceMergeTool(bpy.types.WorkSpaceTool):
     bl_space_type = 'VIEW_3D'
     bl_context_mode = 'EDIT_MESH'
 
-    bl_idname = "mesh_tool.merge_tool"
+    bl_idname = "edit_mesh.merge_tool"
     bl_label = "Merge Tool"
     bl_description = "Interactively merge vertices with the Merge Tool"
     bl_icon = os.path.join(icon_dir, "ops.mesh.merge_tool")
@@ -396,13 +495,15 @@ class ToolMergeTool(bpy.types.WorkSpaceTool):
 
 
 def register():
-    bpy.utils.register_class(MergeTool)
-    bpy.utils.register_tool(ToolMergeTool, after={"builtin.measure"}, separator=True, group=False)
+    for every_class in classes:
+        bpy.utils.register_class(every_class)
+    bpy.utils.register_tool(WorkSpaceMergeTool, after={"builtin.measure"}, separator=True, group=False)
 
 
 def unregister():
-    bpy.utils.unregister_class(MergeTool)
-    bpy.utils.unregister_tool(ToolMergeTool)
+    for every_class in classes:
+        bpy.utils.unregister_class(every_class)
+    bpy.utils.unregister_tool(WorkSpaceMergeTool)
 
 
 if __name__ == "__main__":
