@@ -20,7 +20,7 @@ bl_info = {
     "name": "Merge Tool",
     "description": "An interactive tool for merging vertices.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (1, 1, 6),
+    "version": (1, 1, 7),
     "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
     "location": "View3D > TOOLS > Merge Tool",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -34,6 +34,7 @@ import bgl
 import gpu
 import bmesh
 import os
+from mathutils import Vector
 from gpu_extras.presets import draw_circle_2d
 from gpu_extras.batch import batch_for_shader
 from bpy.props import (
@@ -139,8 +140,50 @@ class MergeToolPreferences(bpy.types.AddonPreferences):
 classes.append(MergeToolPreferences)
 
 
+class DrawPoint():
+    def __init__(self):
+        self.shader = None
+        self.coords = None
+        self.color = None
+
+    def draw(self):
+        batch = batch_for_shader(self.shader, 'POINTS', {"pos": self.coords})
+        self.shader.bind()
+        self.shader.uniform_float("color", self.color)
+        batch.draw(self.shader)
+
+    def add(self, shader, coords, color):
+        self.shader = shader
+        if isinstance(coords, Vector):
+            self.coords = [coords]
+        else:
+            self.coords = coords
+        self.color = color
+        self.draw()
+
+
+class DrawLine():
+    def __init__(self):
+        self.shader = None
+        self.coords = None
+        self.color = None
+
+    def draw(self):
+        batch = batch_for_shader(self.shader, 'LINES', {"pos": self.coords})
+        self.shader.bind()
+        self.shader.uniform_float("color", self.color)
+        batch.draw(self.shader)
+
+    def add(self, shader, coords, color):
+        self.shader = shader
+        self.coords = coords
+        self.color = color
+        self.draw()
+
+
 def draw_callback_3d(self, context):
     if self.started:
+        shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
         if self.start_comp is not None and self.end_comp is not None:
             bgl.glEnable(bgl.GL_BLEND)
             bgl.glLineWidth(self.prefs.line_width)
@@ -148,19 +191,24 @@ def draw_callback_3d(self, context):
             coords = [self.start_comp_transformed, self.end_comp_transformed]
 
             # Line that connects the start and end position (draw first so it's beneath the vertices)
-            shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-            batch = batch_for_shader(shader, 'LINES', {"pos": coords})
-            shader.bind()
-            shader.uniform_float("color", self.prefs.line_color)
-            batch.draw(shader)
+            tool_line = DrawLine()
+            tool_line.add(shader, coords, self.prefs.line_color)
 
             # Ending point
             if self.end_comp != self.start_comp:
-                shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-                batch = batch_for_shader(shader, 'POINTS', {"pos": [self.end_comp_transformed]})
-                shader.bind()
-                shader.uniform_float("color", self.prefs.end_color)
-                batch.draw(shader)
+                end_point = DrawPoint()
+                end_point.add(shader, self.end_comp_transformed, self.prefs.end_color)
+
+                # Middle point
+                if self.merge_location == 'CENTER':
+                    if self.vert_mode:
+                        midpoint = self.world_matrix @ find_center([self.start_comp, self.end_comp])
+                    elif self.edge_mode:
+                        midpoint = self.world_matrix @ \
+                                   find_center([find_center(self.start_comp), find_center(self.end_comp)])
+
+                    mid_point = DrawPoint()
+                    mid_point.add(shader, midpoint, self.prefs.end_color)
 
             bgl.glLineWidth(1)
             bgl.glPointSize(1)
@@ -171,11 +219,8 @@ def draw_callback_3d(self, context):
             bgl.glEnable(bgl.GL_BLEND)
             bgl.glPointSize(self.prefs.point_size)
 
-            shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-            batch = batch_for_shader(shader, 'POINTS', {"pos": [self.start_comp_transformed]})
-            shader.bind()
-            shader.uniform_float("color", self.prefs.start_color)
-            batch.draw(shader)
+            start_point = DrawPoint()
+            start_point.add(shader, self.start_comp_transformed, self.prefs.start_color)
 
 #            bgl.glLineWidth(1)
             bgl.glPointSize(1)
@@ -193,17 +238,22 @@ def draw_callback_2d(self, context):
 
 
 def find_center(source):
-    """Assumes that the input is an Edge or an ordered object holding 2 vertices"""
+    """Assumes that the input is an Edge or an ordered object holding 2 vertices or Vectors"""
     if type(source) == bmesh.types.BMEdge:
         v0 = source.verts[0]
         v1 = source.verts[1]
     elif len(source) != 2:
-        print("find_center accepts a BMEdge or an ordered BMElemSeq, List, or Tuple of vertices.")
+        print("find_center accepts a BMEdge or an ordered BMElemSeq, List, or Tuple of vertices or Vectors.")
     else:
         v0 = source[0]
         v1 = source[1]
-    offset = (v0.co - v1.co)/2
-    return v0.co - offset
+
+    if isinstance(v0, Vector):
+        offset = (v0 - v1)/2
+        return v0 - offset
+    else:
+        offset = (v0.co - v1.co)/2
+        return v0.co - offset
 
 
 def main(self, context, event):
