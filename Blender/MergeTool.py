@@ -20,7 +20,7 @@ bl_info = {
     "name": "Merge Tool",
     "description": "An interactive tool for merging vertices.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (1, 1, 7),
+    "version": (1, 1, 8),
     "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
     "location": "View3D > TOOLS > Merge Tool",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -182,64 +182,84 @@ class DrawLine():
 
 
 def draw_callback_3d(self, context):
-    if self.started:
+    if self.started and self.start_comp is not None:
+        bgl.glEnable(bgl.GL_BLEND)
+        bgl.glPointSize(self.prefs.point_size)
         shader = gpu.shader.from_builtin('3D_UNIFORM_COLOR')
-        if self.start_comp is not None and self.end_comp is not None:
-            bgl.glEnable(bgl.GL_BLEND)
+        if self.end_comp is not None and self.end_comp != self.start_comp:
             bgl.glLineWidth(self.prefs.line_width)
-            bgl.glPointSize(self.prefs.point_size)
             coords = [self.start_comp_transformed, self.end_comp_transformed]
 
             # Line that connects the start and end position (draw first so it's beneath the vertices)
             tool_line = DrawLine()
             tool_line.add(shader, coords, self.prefs.line_color)
 
+            # Ending edge
+            if self.edge_mode:
+                bgl.glLineWidth(self.prefs.edge_width)
+                e1v = [self.world_matrix @ v.co for v in self.end_comp.verts]
+
+                end_edge = DrawLine()
+                if self.merge_location in ('FIRST', 'CENTER'):
+                    end_edge.add(shader, e1v, self.prefs.start_color)
+                else:
+                    end_edge.add(shader, e1v, self.prefs.end_color)
+
             # Ending point
-            if self.end_comp != self.start_comp:
-                end_point = DrawPoint()
+            end_point = DrawPoint()
+            if self.merge_location in ('FIRST', 'CENTER'):
+                end_point.add(shader, self.end_comp_transformed, self.prefs.start_color)
+            else:
                 end_point.add(shader, self.end_comp_transformed, self.prefs.end_color)
 
-                # Middle point
-                if self.merge_location == 'CENTER':
-                    if self.vert_mode:
-                        midpoint = self.world_matrix @ find_center([self.start_comp, self.end_comp])
-                    elif self.edge_mode:
-                        midpoint = self.world_matrix @ \
-                                   find_center([find_center(self.start_comp), find_center(self.end_comp)])
+            # Middle point
+            if self.merge_location == 'CENTER':
+                if self.vert_mode:
+                    midpoint = self.world_matrix @ find_center([self.start_comp, self.end_comp])
+                elif self.edge_mode:
+                    midpoint = self.world_matrix @ \
+                            find_center([find_center(self.start_comp), find_center(self.end_comp)])
 
-                    mid_point = DrawPoint()
-                    mid_point.add(shader, midpoint, self.prefs.end_color)
+                mid_point = DrawPoint()
+                mid_point.add(shader, midpoint, self.prefs.end_color)
 
-            bgl.glLineWidth(1)
-            bgl.glPointSize(1)
-            bgl.glDisable(bgl.GL_BLEND)
+        # Starting edge
+        if self.edge_mode:
+            bgl.glLineWidth(self.prefs.edge_width)
+            e0v = [self.world_matrix @ v.co for v in self.start_comp.verts]
+
+            start_edge = DrawLine()
+            if self.merge_location == 'FIRST':
+                start_edge.add(shader, e0v, self.prefs.end_color)
+            else:
+                start_edge.add(shader, e0v, self.prefs.start_color)
 
         # Starting point
-        if self.start_comp is not None:
-            bgl.glEnable(bgl.GL_BLEND)
-            bgl.glPointSize(self.prefs.point_size)
-
-            start_point = DrawPoint()
+        start_point = DrawPoint()
+        if self.merge_location == 'FIRST':
+            start_point.add(shader, self.start_comp_transformed, self.prefs.end_color)
+        else:
             start_point.add(shader, self.start_comp_transformed, self.prefs.start_color)
 
-#            bgl.glLineWidth(1)
-            bgl.glPointSize(1)
-            bgl.glDisable(bgl.GL_BLEND)
+        bgl.glLineWidth(1)
+        bgl.glPointSize(1)
+        bgl.glDisable(bgl.GL_BLEND)
 
 
 def draw_callback_2d(self, context):
     bgl.glEnable(bgl.GL_BLEND)
 
-    circ_segments = 8 + 1  # Have to add 1 for some reason in order to get proper number of segments. This could potentially also be a ratio with the radius.
+    # Have to add 1 for some reason in order to get proper number of segments.
+    # This could potentially also be a ratio with the radius.
+    circ_segments = 8 + 1
     draw_circle_2d(self.m_coord, self.prefs.circ_color, self.prefs.circ_radius, circ_segments)
 
-#    bgl.glLineWidth(1)
     bgl.glDisable(bgl.GL_BLEND)
 
 
 def find_center(source):
-    """Assumes that the input is an Edge or an ordered object holding 2 vertices or Vectors"""
-    if type(source) == bmesh.types.BMEdge:
+    """Assumes that the input is an Edge or an ordered object holding 2 vertices or 2 Vectors"""
+    if isinstance(source, bmesh.types.BMEdge):
         v0 = source.verts[0]
         v1 = source.verts[1]
     elif len(source) != 2:
@@ -268,7 +288,6 @@ def main(self, context, event):
     print("Result is:", result)  # Delete me later
     if result == {'PASS_THROUGH'}:
         bpy.ops.mesh.select_all(action='DESELECT')
-        print("Yas queen")
 #    if 'FINISHED' not in result:
 #        print("Butt")
 
@@ -277,7 +296,8 @@ class MergeTool(bpy.types.Operator):
     """Modal object selection with a ray cast"""
     bl_idname = "mesh.merge_tool"
     bl_label = "Merge Tool"
-    bl_options = {'REGISTER', 'UNDO'}  # We probably don't need the REGISTER.
+    # We probably don't need the REGISTER. (although if called directly instead of via tool, maybe we do)
+    bl_options = {'REGISTER', 'UNDO'}
 
     merge_location: bpy.props.EnumProperty(
         name="Location",
@@ -316,7 +336,7 @@ class MergeTool(bpy.types.Operator):
         context.area.tag_redraw()
 
         if event.alt or event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
-            # allow navigation (event.alt allows for using Industry Compatible keymap navigation)
+            # Allow navigation (event.alt allows for using Industry Compatible keymap navigation)
             return {'PASS_THROUGH'}
         elif event.type == 'MOUSEMOVE':
             if self.started:
@@ -324,7 +344,7 @@ class MergeTool(bpy.types.Operator):
 #                bpy.ops.mesh.select_all(action='DESELECT')  # ANY PERFORMANCE HIT FOR THIS?
                 self.m_coord = event.mouse_region_x, event.mouse_region_y
                 bpy.ops.view3d.select(extend=False, location=self.m_coord)
-                print("Running view3d.select")  # Delete me later (this runs A LOT)
+#                print("Running view3d.select")  # Delete me later (this runs A LOT)
 
 #                if result == {'PASS_THROUGH'}:
 #                    bpy.ops.mesh.select_all(action='DESELECT')
@@ -334,7 +354,6 @@ class MergeTool(bpy.types.Operator):
 
                 selected_comp = None
                 selected_comp = self.bm.select_history.active
-#                print(selected_comp)
 
                 if selected_comp:
                     self.end_comp = selected_comp  # Set the end component
@@ -342,7 +361,6 @@ class MergeTool(bpy.types.Operator):
                         self.end_comp_transformed = self.world_matrix @ self.end_comp.co
                     elif self.edge_mode:
                         self.end_comp_transformed = self.world_matrix @ find_center(self.end_comp)
-                        self.e1 = selected_comp
 #                else:  # Future improvement: If we replace the use of view3d.select with actual raycasting we can detect if the ray has no hits (is empty space) and only then set end_comp back to None.
 #                    self.end_comp = None  # That way we can do no merge if we're off mesh, but if we're on mesh we won't get flickering if the cursor is on a big face not near an edge or vertex.
 #                    self.end_comp_transformed = None
@@ -357,10 +375,9 @@ class MergeTool(bpy.types.Operator):
                     if selected_comp:
                         self.start_comp = selected_comp  # Set the start component
                         if self.vert_mode:
-                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co  # Edge mode is going to need 6 transformed points to draw; the verts and center of each edge.  I feel that transformation should happen outside of the actual draw handlers?
+                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co
                         elif self.edge_mode:
                             self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
-                            self.e0 = selected_comp
                     else:
                         self.remove_handles(context)
                         print("Nope, cancelled.")  # Delete me later
@@ -384,7 +401,7 @@ class MergeTool(bpy.types.Operator):
                         bpy.ops.mesh.merge(type=self.merge_location)
                     elif self.edge_mode:
                         bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'VERT'})  # THIS MAY NOT BE NECESSARY NOW THAT WE'RE DOING BMESH MERGING; TEST AND SEE. Note: would have to replace the bpy.ops.mesh.merge code for the "edges share a vertex" case.
-                        # Separate edges
+                        # Two separate edges
                         if not any([v for v in self.start_comp.verts if v in self.end_comp.verts]):
                             bridge = bmesh.ops.bridge_loops(self.bm, edges=(self.start_comp, self.end_comp))
                             new_e0 = bridge['edges'][0]
@@ -412,7 +429,7 @@ class MergeTool(bpy.types.Operator):
                         # Edges share a vertex
                         else:
                             shared_vert = [v for v in self.start_comp.verts if v in self.end_comp.verts][0]
-                            print("shared index:", shared_vert.index)
+#                            print("shared index:", shared_vert.index)  # Delete me later
                             for v in self.start_comp.verts:
                                 if v is not shared_vert:
                                     v.select = True
@@ -433,9 +450,6 @@ class MergeTool(bpy.types.Operator):
                     bpy.ops.mesh.select_all(action='DESELECT')
                     self.start_comp = None
                     self.end_comp = None
-                    if self.edge_mode:
-                        self.e0 = None
-                        self.e1 = None
                     self.started = False
                     self.remove_handles(context)
                     context.workspace.status_text_set(None)
@@ -458,8 +472,6 @@ class MergeTool(bpy.types.Operator):
         self.edge_mode = context.tool_settings.mesh_select_mode[1] and not context.tool_settings.mesh_select_mode[0]
         self.face_mode = context.tool_settings.mesh_select_mode[2]
 
-        print("Modes:", self.vert_mode, self.edge_mode, self.face_mode)
-
         # Checks if we are in face selection mode.
         if self.face_mode:
             self.report({'WARNING'}, "Merge Tool does not work with Face selection mode")
@@ -474,7 +486,7 @@ class MergeTool(bpy.types.Operator):
             self.end_comp = None
             self.started = False
 
-            main(self, context, event)  #This goes up here or else there will be a hard crash; probably one of the "gotchas" related to memory pointers.
+            main(self, context, event)  #This goes up here or else there will be a hard crash
 
             if self.vert_mode and context.object.data.total_vert_sel == 0:
                 context.workspace.status_text_set(None)
@@ -502,10 +514,9 @@ class MergeTool(bpy.types.Operator):
                     if selected_comp:
                         self.start_comp = selected_comp  # Set the start component
                         if self.vert_mode:
-                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co  # Edge mode is going to need 6 transformed points to draw; the verts and center of each edge.  I feel that transformation should happen outside of the actual draw handlers?
+                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co
                         elif self.edge_mode:
                             self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
-                            self.e0 = selected_comp
                     else:
                         self.remove_handles(context)
                         print("Nope, cancelled.")  # Delete me later
