@@ -20,7 +20,7 @@ bl_info = {
     "name": "Merge Tool",
     "description": "An interactive tool for merging vertices.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (1, 1, 8),
+    "version": (1, 1, 9),
     "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
     "location": "View3D > TOOLS > Merge Tool",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -28,6 +28,21 @@ bl_info = {
     "tracker_url": "https://github.com/MightyBOBcnc/Scripts/issues",
     "category": "Mesh"
 }
+
+# ToDo:
+# Real raycasting
+# Modifier or alternate keys to specify First/Last/Center at runtime
+#     Side note: At present because the WorkSpaceMergeTool only has a bl_keymap for leftmouse press, anything that isn't a leftmouse press gets ignored and executed normally without even firing the tool.
+#     To have modifiers we would need to add more bl_keymap entries in case the user starts their action with the modifier held.
+#     This would potentially break the current benefit where, at present, shift+leftmouse and ctrl+leftmouse are being ignored and passed to the regular view3d.select operator so even more special handling code would need to be written.
+# Fallback tool (box or lasso select)
+#     Configurable by user
+# In vertex mode, multi-merge if there is a selection when starting (with boolean pref to enable/disable)
+# And possibly see if vertices can be added to a list in real time as the mouse is dragged and then merge at the final one where the mouse is released.
+#     I THINK this would still be compatible with the CENTER merge mode in the merge operator that we're calling.  It would collapse to the middle.  Of course neither of these options are compatible with Edge mode.
+# To more easily allow most of the above, some parts of the function should be abstracted out (e.g. the part that is duplicated in the modal and the invoke where we check if not self.started in order to set the start_comp)
+# Maybe a mode where you can use the Circle Select to paint the vertices to merge. (multi-merge)
+
 
 import bpy
 import bgl
@@ -276,6 +291,25 @@ def find_center(source):
         return v0.co - offset
 
 
+def set_component(self, mode):
+    selected_comp = None
+    selected_comp = self.bm.select_history.active
+
+    if selected_comp:
+        if mode == 'START':
+            self.start_comp = selected_comp  # Set the start component
+            if self.vert_mode:
+                self.start_comp_transformed = self.world_matrix @ self.start_comp.co
+            elif self.edge_mode:
+                self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
+        if mode == 'END':
+            self.end_comp = selected_comp  # Set the end component
+            if self.vert_mode:
+                self.end_comp_transformed = self.world_matrix @ self.end_comp.co
+            elif self.edge_mode:
+                self.end_comp_transformed = self.world_matrix @ find_center(self.end_comp)
+
+
 def main(self, context, event):
     """Run this function on left mouse, execute the ray cast"""
     self.m_coord = event.mouse_region_x, event.mouse_region_y
@@ -299,14 +333,20 @@ class MergeTool(bpy.types.Operator):
     # We probably don't need the REGISTER. (although if called directly instead of via tool, maybe we do)
     bl_options = {'REGISTER', 'UNDO'}
 
-    merge_location: bpy.props.EnumProperty(
-        name="Location",
-        description="Merge location",
-        items=[('FIRST', "First", "Components will be merged at the first component", 1),
-               ('LAST', "Last", "Components will be merged at the last component", 2),
-               ('CENTER', "Center", "Components will be merged at the center between the two", 3)
-               ],
-        default='LAST'
+    merge_location: EnumProperty(
+        name = "Location",
+        description = "Merge location",
+        items = [('FIRST', "First", "Components will be merged at the first component", 1),
+                ('LAST', "Last", "Components will be merged at the last component", 2),
+                ('CENTER', "Center", "Components will be merged at the center between the two", 3)
+                ],
+        default = 'LAST'
+    )
+
+    wait_for_input: BoolProperty(
+        name = "Wait for Input",
+        description = "Wait for input or begin modal immediately",
+        default = False
     )
 
     def __init__(self):
@@ -322,6 +362,12 @@ class MergeTool(bpy.types.Operator):
         self._handle3d = None
         self._handle2d = None
 
+
+    def add_handles(self, context):
+        args = (self, context)
+        self._handle3d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_3d, args, 'WINDOW', 'POST_VIEW')
+        if self.prefs.show_circ:
+            self._handle2d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_2d, args, 'WINDOW', 'POST_PIXEL')
 
     def remove_handles(self, context):
         if self._handle3d:
@@ -352,15 +398,8 @@ class MergeTool(bpy.types.Operator):
 #                    self.end_comp_transformed = None
 #                    print("debug")
 
-                selected_comp = None
-                selected_comp = self.bm.select_history.active
+                set_component(self, 'END')
 
-                if selected_comp:
-                    self.end_comp = selected_comp  # Set the end component
-                    if self.vert_mode:
-                        self.end_comp_transformed = self.world_matrix @ self.end_comp.co
-                    elif self.edge_mode:
-                        self.end_comp_transformed = self.world_matrix @ find_center(self.end_comp)
 #                else:  # Future improvement: If we replace the use of view3d.select with actual raycasting we can detect if the ray has no hits (is empty space) and only then set end_comp back to None.
 #                    self.end_comp = None  # That way we can do no merge if we're off mesh, but if we're on mesh we won't get flickering if the cursor is on a big face not near an edge or vertex.
 #                    self.end_comp_transformed = None
@@ -369,21 +408,16 @@ class MergeTool(bpy.types.Operator):
             if not self.started:
                 if (self.vert_mode and context.object.data.total_vert_sel == 1) or \
                    (self.edge_mode and context.object.data.total_edge_sel == 1):
-                    selected_comp = None
-                    selected_comp = self.bm.select_history.active
 
-                    if selected_comp:
-                        self.start_comp = selected_comp  # Set the start component
-                        if self.vert_mode:
-                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co
-                        elif self.edge_mode:
-                            self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
-                    else:
-                        self.remove_handles(context)
-                        print("Nope, cancelled.")  # Delete me later
-                        return {'CANCELLED'}
+                    set_component(self, 'START')
                     self.started = True
                     print("We're in here and are started.")
+                    self.add_handles(context)
+
+                else:
+                    self.remove_handles(context)
+                    print("Nope, cancelled.")  # Delete me later
+                    return {'CANCELLED'}
             elif self.start_comp is self.end_comp:
                 self.remove_handles(context)
                 context.workspace.status_text_set(None)
@@ -485,45 +519,49 @@ class MergeTool(bpy.types.Operator):
             self.start_comp = None
             self.end_comp = None
             self.started = False
-
-            main(self, context, event)  #This goes up here or else there will be a hard crash
-
-            if self.vert_mode and context.object.data.total_vert_sel == 0:
-                context.workspace.status_text_set(None)
-                return {'CANCELLED'}
-            elif self.edge_mode and context.object.data.total_edge_sel == 0:
-                context.workspace.status_text_set(None)
-                return {'CANCELLED'}
-
             self.me = bpy.context.object.data
             self.world_matrix = bpy.context.object.matrix_world
             self.bm = bmesh.from_edit_mesh(self.me)
 
-            args = (self, context)
-            self._handle3d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_3d, args, 'WINDOW', 'POST_VIEW')
-            if self.prefs.show_circ:
-                self._handle2d = bpy.types.SpaceView3D.draw_handler_add(draw_callback_2d, args, 'WINDOW', 'POST_PIXEL')
+            if self.wait_for_input:
+                # https://docs.blender.org/api/current/bpy.types.WindowManager.html#bpy.types.WindowManager.modal_handler_add  Is this proper usage and/or mandatory?
+                context.window_manager.modal_handler_add(self)
 
-            context.window_manager.modal_handler_add(self)
+#                w = context.window_manager.windows[0]
+#                w.cursor_modal_set("EYEDROPPER")
+#                w.cursor_modal_restore()
+
+                print("Operator invoked directly instead of via tool")
+                return {'RUNNING_MODAL'}
+
+
+            main(self, context, event)  #This goes up here or else there will be a hard crash
+
+            if self.vert_mode and context.object.data.total_vert_sel == 0:  # These two checks will need to be replaced if we want to be able to set a fallback of box/lasso select?
+                context.workspace.status_text_set(None)
+                print("Cancelled; No starting component to begin.")
+                return {'CANCELLED'}
+            elif self.edge_mode and context.object.data.total_edge_sel == 0:
+                context.workspace.status_text_set(None)
+                print("Cancelled; No starting component to begin.")
+                return {'CANCELLED'}
+
+            self.add_handles(context)
+
             if not self.started:
                 if (self.vert_mode and context.object.data.total_vert_sel == 1) or \
                    (self.edge_mode and context.object.data.total_edge_sel == 1):
-                    selected_comp = None
-                    selected_comp = self.bm.select_history.active
 
-                    if selected_comp:
-                        self.start_comp = selected_comp  # Set the start component
-                        if self.vert_mode:
-                            self.start_comp_transformed = self.world_matrix @ self.start_comp.co
-                        elif self.edge_mode:
-                            self.start_comp_transformed = self.world_matrix @ find_center(self.start_comp)
-                    else:
-                        self.remove_handles(context)
-                        print("Nope, cancelled.")  # Delete me later
-                        return {'CANCELLED'}
+                    set_component(self, 'START')
                     self.started = True
 
+                else:
+                    self.remove_handles(context)
+                    print("Nope, cancelled.")  # Delete me later
+                    return {'CANCELLED'}
 
+            # https://docs.blender.org/api/current/bpy.types.WindowManager.html#bpy.types.WindowManager.modal_handler_add  Is this proper usage and/or mandatory?
+            context.window_manager.modal_handler_add(self)
             print("Invoke called, it wants its joke back")
             return {'RUNNING_MODAL'}
         else:
@@ -544,7 +582,8 @@ class WorkSpaceMergeTool(bpy.types.WorkSpaceTool):
     bl_widget = None
     bl_keymap = (
         ("mesh.merge_tool", {"type": 'LEFTMOUSE', "value": 'PRESS'},
-         {"properties": []}),
+#        {"properties": [("wait_for_input", False)]}),
+        {"properties": []}),
     )
 
     def draw_settings(context, layout, tool):
@@ -553,6 +592,7 @@ class WorkSpaceMergeTool(bpy.types.WorkSpaceTool):
         row = layout.row()
         row.use_property_split = False
         row.prop(tool_props, "merge_location", text="Location")
+        row.prop(tool_props, "wait_for_input", text="Wait for Input")
 
 
 def register():
