@@ -20,8 +20,8 @@ bl_info = {
     "name": "Merge Tool",
     "description": "An interactive tool for merging vertices.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (1, 1, 9),
-    "blender": (2, 83, 0),  # Minimum version might have to be 2.83 due to changes in tool registration in that version that are different from before?
+    "version": (1, 2, 0),
+    "blender": (2, 80, 0),
     "location": "View3D > TOOLS > Merge Tool",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
     "wiki_url": "https://github.com/MightyBOBcnc/Scripts/tree/Loopanar-Hybrid/Blender",
@@ -36,12 +36,18 @@ bl_info = {
 #     To have modifiers we would need to add more bl_keymap entries in case the user starts their action with the modifier held.
 #     This would potentially break the current benefit where, at present, shift+leftmouse and ctrl+leftmouse are being ignored and passed to the regular view3d.select operator so even more special handling code would need to be written.
 # Fallback tool (box or lasso select)
-#     Configurable by user
+#     Configurable by user.  # NOTE: This may conflict with modifier/alternate keys because shift/ctrl/alt+LMB are used by box and lasso.
 # In vertex mode, multi-merge if there is a selection when starting (with boolean pref to enable/disable)
-# And possibly see if vertices can be added to a list in real time as the mouse is dragged and then merge at the final one where the mouse is released.
+#     This would only be applicable if the start_comp was one of the verts from the pre-existing selection.
+# And possibly see if vertices can be added to a list in real time as the mouse is dragged and then merge at the final one where the mouse is released. ()
 #     I THINK this would still be compatible with the CENTER merge mode in the merge operator that we're calling.  It would collapse to the middle.  Of course neither of these options are compatible with Edge mode.
 # To more easily allow most of the above, some parts of the function should be abstracted out (e.g. the part that is duplicated in the modal and the invoke where we check if not self.started in order to set the start_comp)
 # Maybe a mode where you can use the Circle Select to paint the vertices to merge. (multi-merge)
+# Test and find out if context is actually needed in the remove_handles, draw_callback_3d, and draw_callback_2d functions.  (After removing and testing, it doesn't seem to be strictly required, but it's there in Blender's built-in templates so I'm keeping it even though it doesn't appear to do anything.)
+# Get rid of explicit vert_mode, edge_mode, and face_mode variables and just have one "sel_mode" that gets set to 'VERT', 'EDGE', 'FACE'
+# The part of the code that does the merging could use some cleanup because it's a bit repetitive.
+#     We might also get rid of all use of bpy.ops.mesh.merge(type=self.merge_location) and manual selection and select_history manipulation at some point for any merging of only two vertices. (multi-merge would need to use it still, because math for the CENTER mode might be hard)
+# We probably don't need the REGISTER in the bl_options. (although if called directly instead of via tool, maybe we do)  Need to test and find out.
 
 
 import bpy
@@ -62,6 +68,11 @@ from bpy.props import (
     )
 
 icon_dir = os.path.join(os.path.dirname(__file__), "icons")
+if bpy.app.version[1] < 81:  # 2.80 didn't have the PAINT_CROSS cursor
+    t_cursor = 'CROSSHAIR'
+else:
+    t_cursor = 'PAINT_CROSS'
+
 
 classes = []
 
@@ -336,9 +347,9 @@ class MergeTool(bpy.types.Operator):
     merge_location: EnumProperty(
         name = "Location",
         description = "Merge location",
-        items = [('FIRST', "First", "Components will be merged at the first component", 1),
-                ('LAST', "Last", "Components will be merged at the last component", 2),
-                ('CENTER', "Center", "Components will be merged at the center between the two", 3)
+        items = [('FIRST', "First", "Components will be merged at the first component", 'TRIA_LEFT', 1),
+                ('LAST', "Last", "Components will be merged at the last component", 'TRIA_RIGHT', 2),
+                ('CENTER', "Center", "Components will be merged at the center between the two", 'TRIA_DOWN', 3)
                 ],
         default = 'LAST'
     )
@@ -352,6 +363,7 @@ class MergeTool(bpy.types.Operator):
     def __init__(self):
         print("========This happens first========")  # Delete me later
         self.prefs = bpy.context.preferences.addons[__name__].preferences
+        self.window = bpy.context.window_manager.windows[0]
         self.m_coord = None
         self.vert_mode = None
         self.edge_mode = None
@@ -362,6 +374,19 @@ class MergeTool(bpy.types.Operator):
         self._handle3d = None
         self._handle2d = None
 
+    def finish(self, context):
+        self.remove_handles(context)
+        context.workspace.status_text_set(None)
+        self.window.cursor_modal_restore()
+        self.m_coord = None  # Most of this is probably not required
+        self.vert_mode = None
+        self.edge_mode = None
+        self.face_mode = None
+        self.start_comp = None
+        self.end_comp = None
+        self.started = False
+        self._handle3d = None
+        self._handle2d = None
 
     def add_handles(self, context):
         args = (self, context)
@@ -384,6 +409,12 @@ class MergeTool(bpy.types.Operator):
         if event.alt or event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
             # Allow navigation (event.alt allows for using Industry Compatible keymap navigation)
             return {'PASS_THROUGH'}
+        elif event.type in {'ONE', 'A', 'F'} and event.value == 'PRESS':
+            self.merge_location = 'FIRST'
+        elif event.type in {'TWO', 'C'} and event.value == 'PRESS':
+            self.merge_location = 'CENTER'
+        elif event.type in {'THREE', 'L'} and event.value == 'PRESS':
+            self.merge_location = 'LAST'
         elif event.type == 'MOUSEMOVE':
             if self.started:
 #                self.bm.select_history.clear()
@@ -415,12 +446,11 @@ class MergeTool(bpy.types.Operator):
                     self.add_handles(context)
 
                 else:
-                    self.remove_handles(context)
+                    self.finish(context)
                     print("Nope, cancelled.")  # Delete me later
                     return {'CANCELLED'}
             elif self.start_comp is self.end_comp:
-                self.remove_handles(context)
-                context.workspace.status_text_set(None)
+                self.finish(context)
                 print("Cancelled for lack of anything to do.")  # Delete me later
                 return {'CANCELLED'}
             elif self.start_comp is not None and self.end_comp is not None:
@@ -434,28 +464,27 @@ class MergeTool(bpy.types.Operator):
                         self.bm.select_history.add(self.end_comp)
                         bpy.ops.mesh.merge(type=self.merge_location)
                     elif self.edge_mode:
-                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'VERT'})  # THIS MAY NOT BE NECESSARY NOW THAT WE'RE DOING BMESH MERGING; TEST AND SEE. Note: would have to replace the bpy.ops.mesh.merge code for the "edges share a vertex" case.
                         # Two separate edges
                         if not any([v for v in self.start_comp.verts if v in self.end_comp.verts]):
                             bridge = bmesh.ops.bridge_loops(self.bm, edges=(self.start_comp, self.end_comp))
                             new_e0 = bridge['edges'][0]
                             new_e1 = bridge['edges'][1]
-                            sv0 = [v for v in new_e0.verts if v in self.start_comp.verts][0]
-                            sv1 = [v for v in new_e1.verts if v in self.start_comp.verts][0]
-                            ev0 = new_e0.other_vert(sv0)
-                            ev1 = new_e1.other_vert(sv1)
+                            sv0 = [v for v in new_e0.verts if v in self.start_comp.verts][0]  # Start vert 0
+                            sv1 = [v for v in new_e1.verts if v in self.start_comp.verts][0]  # Start vert 1
+                            ev0 = new_e0.other_vert(sv0)  # End vert 0
+                            ev1 = new_e1.other_vert(sv1)  # End vert 1
 
                             merge_map = {}
                             merge_map[sv0] = ev0
                             merge_map[sv1] = ev1
                             # bmesh weld_verts always moves verts to target so we must manually set desired vert.co
-                            if self.merge_location == 'FIRST':
+                            if self.merge_location == 'FIRST':  # Move end verts to start vert locations
                                 ev0.co = sv0.co
                                 ev1.co = sv1.co
-                            elif self.merge_location == 'CENTER':
+                            elif self.merge_location == 'CENTER':  # Move end verts to centers
                                 ev0.co = find_center(new_e0)
                                 ev1.co = find_center(new_e1)
-                            elif self.merge_location == 'LAST':
+                            elif self.merge_location == 'LAST':  # Moving not required but doing this for consistency
                                 sv0.co = ev0.co
                                 sv1.co = ev1.co
                             bmesh.ops.weld_verts(self.bm, targetmap=merge_map)
@@ -464,39 +493,37 @@ class MergeTool(bpy.types.Operator):
                         else:
                             shared_vert = [v for v in self.start_comp.verts if v in self.end_comp.verts][0]
 #                            print("shared index:", shared_vert.index)  # Delete me later
-                            for v in self.start_comp.verts:
-                                if v is not shared_vert:
-                                    v.select = True
-                                    self.bm.select_history.add(v)
-                            for v in self.end_comp.verts:
-                                if v is not shared_vert:
-                                    v.select = True
-                                    self.bm.select_history.add(v)
-                            bpy.ops.mesh.merge(type=self.merge_location)
-                        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'EDGE'})  # THIS MAY NOT BE NECESSARY NOW THAT WE'RE DOING BMESH MERGING; TEST AND SEE. Note: would have to replace the bpy.ops.mesh.merge code for the "edges share a vertex" case.
+                            sv = [v for v in self.start_comp.verts if v is not shared_vert][0]  # Start vert
+                            ev = [v for v in self.end_comp.verts if v is not shared_vert][0]  # End vert
+                            merge_map = {}
+                            merge_map[sv] = ev
+                            # bmesh weld_verts always moves verts to target so we must manually set desired vert.co
+                            if self.merge_location == 'FIRST':  # Move end verts to start vert locations
+                                ev.co = sv.co
+                            elif self.merge_location == 'CENTER':  # Move end verts to centers
+                                ev.co = find_center([sv, ev])
+                            elif self.merge_location == 'LAST':  # Moving not required but doing this for consistency
+                                sv.co = ev.co
+                            bmesh.ops.weld_verts(self.bm, targetmap=merge_map)
+                            bmesh.update_edit_mesh(self.me)
 
 #                    bpy.ops.ed.undo_push(
 #                        message="Merge Tool undo step")  # We may not even need the undo step if all we are doing is running a merge?  (Perhaps if the merge fails this is good to prevent undoing a step farther than the user wants?)
                 except TypeError:
                     print("That failed for some reason.")
+                    self.finish(context)
                     return {'CANCELLED'}
                 finally:
                     bpy.ops.mesh.select_all(action='DESELECT')
-                    self.start_comp = None
-                    self.end_comp = None
-                    self.started = False
-                    self.remove_handles(context)
-                    context.workspace.status_text_set(None)
+                    self.finish(context)
                 return {'FINISHED'}
             else:
-                self.remove_handles(context)
-                context.workspace.status_text_set(None)
+                self.finish(context)
                 print("End of line; cancelled.")  # Delete me later
                 return {'CANCELLED'}
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
             print("Cancelled")  # Delete me later
-            self.remove_handles(context)
-            context.workspace.status_text_set(None)
+            self.finish(context)
             return {'CANCELLED'}
 
         return {'RUNNING_MODAL'}
@@ -514,7 +541,7 @@ class MergeTool(bpy.types.Operator):
             self.report({'WARNING'}, "Selection Mode must be Vertex OR Edge, not both at the same time")
             return {'CANCELLED'}
         if context.space_data.type == 'VIEW_3D':
-            context.workspace.status_text_set("Left click and drag to merge vertices, Esc or right click to cancel")
+            context.workspace.status_text_set("Left click and drag to merge vertices. Esc or right click to cancel. Modifier keys during drag: [1], [2], [3], [A], [C], [F], [L]")
 
             self.start_comp = None
             self.end_comp = None
@@ -526,23 +553,18 @@ class MergeTool(bpy.types.Operator):
             if self.wait_for_input:
                 # https://docs.blender.org/api/current/bpy.types.WindowManager.html#bpy.types.WindowManager.modal_handler_add  Is this proper usage and/or mandatory?
                 context.window_manager.modal_handler_add(self)
-
-#                w = context.window_manager.windows[0]
-#                w.cursor_modal_set("EYEDROPPER")
-#                w.cursor_modal_restore()
-
+                self.window.cursor_modal_set(t_cursor)
                 print("Operator invoked directly instead of via tool")
                 return {'RUNNING_MODAL'}
-
 
             main(self, context, event)  #This goes up here or else there will be a hard crash
 
             if self.vert_mode and context.object.data.total_vert_sel == 0:  # These two checks will need to be replaced if we want to be able to set a fallback of box/lasso select?
-                context.workspace.status_text_set(None)
+                self.finish(context)
                 print("Cancelled; No starting component to begin.")
                 return {'CANCELLED'}
             elif self.edge_mode and context.object.data.total_edge_sel == 0:
-                context.workspace.status_text_set(None)
+                self.finish(context)
                 print("Cancelled; No starting component to begin.")
                 return {'CANCELLED'}
 
@@ -554,14 +576,14 @@ class MergeTool(bpy.types.Operator):
 
                     set_component(self, 'START')
                     self.started = True
-
                 else:
-                    self.remove_handles(context)
+                    self.finish(context)
                     print("Nope, cancelled.")  # Delete me later
                     return {'CANCELLED'}
 
             # https://docs.blender.org/api/current/bpy.types.WindowManager.html#bpy.types.WindowManager.modal_handler_add  Is this proper usage and/or mandatory?
             context.window_manager.modal_handler_add(self)
+            self.window.cursor_modal_set(t_cursor)
             print("Invoke called, it wants its joke back")
             return {'RUNNING_MODAL'}
         else:
@@ -578,21 +600,19 @@ class WorkSpaceMergeTool(bpy.types.WorkSpaceTool):
     bl_label = "Merge Tool"
     bl_description = "Interactively merge vertices with the Merge Tool"
     bl_icon = os.path.join(icon_dir, "ops.mesh.merge_tool")
-    bl_cursor = 'PAINT_CROSS'
+    bl_cursor = t_cursor
     bl_widget = None
     bl_keymap = (
         ("mesh.merge_tool", {"type": 'LEFTMOUSE', "value": 'PRESS'},
-#        {"properties": [("wait_for_input", False)]}),
-        {"properties": []}),
+        {"properties": [("wait_for_input", False)]}),
     )
 
     def draw_settings(context, layout, tool):
         tool_props = tool.operator_properties("mesh.merge_tool")
 
         row = layout.row()
-        row.use_property_split = False
-        row.prop(tool_props, "merge_location", text="Location")
-        row.prop(tool_props, "wait_for_input", text="Wait for Input")
+        row.prop(tool_props, "merge_location")
+#        row.prop(tool_props, "wait_for_input")
 
 
 def register():
