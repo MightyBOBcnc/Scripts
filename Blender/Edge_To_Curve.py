@@ -19,13 +19,14 @@
 
 bl_info = {
     "name": "Edges To Curve",
-    "category": "Object",
+    "category": "Mesh",
+    "location": "View3D > Edge menu or Context menu",
     "description": "Converts selected edges into curve with extrusion",
-    "author": "Andreas Strømberg",
+    "author": "Andreas Strømberg, Chris Kohl",
     "wiki_url": "https://github.com/Stromberg90/Scripts/tree/master/Blender",
     "tracker_url": "https://github.com/Stromberg90/Scripts/issues",
     "blender": (2, 80, 0),
-    "version": (1, 0)
+    "version": (1, 0, 3)
 }
 
 import bpy
@@ -60,6 +61,7 @@ class EventType:
 class ModalEdgeToCurve(bpy.types.Operator):
     bl_idname = "object.edge_to_curve"
     bl_label = "Edges To Curve"
+    bl_description = "Takes selected mesh edges and converts them into a curve."
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -105,7 +107,7 @@ class ModalEdgeToCurve(bpy.types.Operator):
         self.value = 0.0
         self.start_value = event.mouse_x
         self.resolution = 2
-        self.original_object = bpy.context.selected_objects[0]
+        self.original_object = bpy.context.active_object
         if context.active_object.type == 'CURVE':
             context.object.data.fill_mode = 'FULL'
             context.object.data.bevel_resolution = self.resolution
@@ -134,13 +136,22 @@ class ModalEdgeToCurve(bpy.types.Operator):
             context.window_manager.modal_handler_add(self)
             return {'RUNNING_MODAL'}
 
+def EdgeToCurveMenuItem(self, context):
+    layout = self.layout
+    layout.separator()
+    layout.operator_context = 'INVOKE_DEFAULT'
+    layout.operator("object.edge_to_curve", text="Edges to Curve")
 
 def register():
     bpy.utils.register_class(ModalEdgeToCurve)
+    bpy.types.VIEW3D_MT_edit_mesh_edges.append(EdgeToCurveMenuItem)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(EdgeToCurveMenuItem)
 
 
 def unregister():
     bpy.utils.unregister_class(ModalEdgeToCurve)
+    bpy.types.VIEW3D_MT_edit_mesh_edges.remove(EdgeToCurveMenuItem)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(EdgeToCurveMenuItem)
 
 
 if __name__ == "__main__":
