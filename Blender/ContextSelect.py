@@ -20,7 +20,7 @@ bl_info = {
     "name": "Context Select Hybrid",
     "description": "Context-aware loop selection for vertices, edges, and faces.",
     "author": "Andreas Strømberg, Chris Kohl",
-    "version": (0, 2, 4),
+    "version": (0, 2, 5),
     "blender": (2, 80, 0),
     "location": "",
     "warning": "Dev Branch. Somewhat experimental features. Possible performance issues.",
@@ -30,6 +30,8 @@ bl_info = {
 }
 
 # ToDo:
+# Test what happens if the user has installed the add-on, then manually removed the keymap entries instead of using the preference checkbox to get rid of them, and then the user deactivates or uninstalls the add-on.
+#     Will cs_unregister_keymap_keys gracefully 'fail' if there is nothing to remove or do I need to add an "if exists" check first?
 # Still need to test with instanced geometry.  Especially the preferences like ignore hidden geometry.
 #     And then tell this guy about it: https://blender.community/c/rightclickselect/ltbbbc/
 # Add some more robust checks to validate against nonmanifold geometry like more than 2 faces connected to 1 edge and such.  Some of the functions just assume that the correct components have been passed to them. (although that's not necessarily a bad thing; Blender internal does that a lot, too)
@@ -115,6 +117,15 @@ bl_info = {
 # Maybe the way to do it would be, if active and previous are the same type, use that appropriate context_N_select.  If they are different, return cancelled UNLESS the active is an edge, in which case, fire off context_edge_select with special logic
 # to skip all the tests and just select an edge loop (since it's a double click). I could restructure that function to use Modes (loop, ring, bounded?) perhaps.  Even if I don't this will be the most complicated function of the 3 just due to the many different edge types and selections.
 # NOTE, HOWEVER, that if I allow the function to fire when the active and previous component are different types (e.g. a vert and an edge) there could possibly be conflicts with other add-ons like the issue that xan found when using PolyQuilt that I fixed.
+# 
+# Idea for how to use loops to walk a mesh boundary (may or may not be more efficient):
+#     1. Start with an edge, and its only loop, and a vertex on the starting edge.
+#     2. taco = loop.link_loop_next
+#     3. taco_edge = taco.edge
+#     4. Check if one of the vertices in taco_edge.verts is the vert we started with.
+#     4a. If it is, then we link_loop_radial_next and continue.
+#     4b. If it isn't, then we go back to step 2 and do a loop.link_loop_prev instead and try again.
+#     5. Something something, I dunno it's 6AM and I'm sleepy.  Something like the BM_vert_step_fan_loop to get the next boundary edge's loop.. we know it's boundary either by doing a loop.edge.is_boundary or if the loop.link_loop_radial_next == loop and then use other_vert to continue
 
 
 import bpy
@@ -159,8 +170,8 @@ def cs_update_keymap_keys(self, context):
 
 
 class ContextSelectPreferences(bpy.types.AddonPreferences):
-    # this must match the addon name, use '__package__'
-    # when defining this in a submodule of a python package.
+    # this must match the addon __name__
+    # use '__package__' when defining this in a submodule of a python package.
     bl_idname = __name__
 
     add_keys_to_keymap: bpy.props.BoolProperty(
@@ -933,10 +944,11 @@ def bounded_loop_vert_manifold(prefs, starting_vert, ends):
                 print("Discarding an infinite.")
                 partial_list.discard("infinite")
                 opposite_edge = get_opposite_edge(loop_edge, starting_vert)
-                for l in opposite_edge.link_loops:
-                    if l in candidate_dirs:
-                        print("Removing loop with edge", l.edge.index)
-                        candidate_dirs[candidate_dirs.index(l)] = "skip"
+                if opposite_edge is not None:
+                    for l in opposite_edge.link_loops:
+                        if l in candidate_dirs:
+                            print("Removing loop with edge", l.edge.index)
+                            candidate_dirs[candidate_dirs.index(l)] = "skip"
             if ends[0] in partial_list and ends[1] in partial_list:
                 print("Connected Loop match. Adding partial_list to connected_loops.")
                 connected_loops.append(partial_list)
@@ -1124,7 +1136,10 @@ def full_loop_vert_manifold(prefs, starting_vert, starting_edge):
         if len(starting_vert.link_loops) != 4:  # Checking if both verts are unusable.
             return None
     opposite_edge = get_opposite_edge(starting_edge, starting_vert)
-    loops = [starting_edge.link_loops[0], opposite_edge.link_loops[0]]
+    if opposite_edge is not None:
+        loops = [starting_edge.link_loops[0], opposite_edge.link_loops[0]]
+    else:
+        loops = [starting_edge.link_loops[0]]
     vert_list = set()
     reference_list = set()
 
@@ -1227,7 +1242,10 @@ def full_loop_edge_manifold(edge):
     else:
         return []
     opposite_edge = get_opposite_edge(edge, starting_vert)
-    loops = [edge.link_loops[0], opposite_edge.link_loops[0]]
+    if opposite_edge is not None:
+        loops = [edge.link_loops[0], opposite_edge.link_loops[0]]
+    else:
+        loops = [edge.link_loops[0]]
 
     prefs = bpy.context.preferences.addons[__name__].preferences
     edge_list = set()  # Checking for membership in sets is faster than lists []
@@ -1916,8 +1934,11 @@ def get_opposite_edge(edge, vert):
     a_face = [f for f in faces if edge in f.edges][0]
     step_loop = [l for l in a_face.loops if l.edge in edges and l.edge != edge][0]
     opposite_loop = fan_loop_extension(edge, step_loop, vert)
-    opposite_edge = opposite_loop.edge
-    return opposite_edge
+    if opposite_loop is not None:
+        opposite_edge = opposite_loop.edge
+        return opposite_edge
+    else:
+        return None
 
 
 def register():
